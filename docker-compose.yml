@@ -6,7 +6,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://goat:${POSTGRES_PASSWORD:-goat}@db:5432/goat_merge
+      DATABASE_URL: postgres://goat:${POSTGRES_PASSWORD:-goat}@db:5432/merge
       GOAT_MERGE_PUBLIC_URL: ${GOAT_MERGE_PUBLIC_URL:-}
       GOAT_MERGE_MASTER_KEY: ${GOAT_MERGE_MASTER_KEY:-}
       LISTEN_ADDR: 0.0.0.0:8080
@@ -19,13 +19,13 @@ services:
     environment:
       POSTGRES_USER: goat
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goat}
-      POSTGRES_DB: goat_merge
+      POSTGRES_DB: merge
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - queue:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U goat -d goat_merge"]
+      test: ["CMD-SHELL", "pg_isready -U goat -d merge"]
       interval: 5s
       timeout: 5s
       retries: 20

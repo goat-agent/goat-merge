@@ -27,7 +27,7 @@ Anything touching `crates/goat-merge` needs a PostgreSQL to talk to:
 
 ```sh
 docker compose up -d db
-export DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/goat_merge
+export DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/merge
 ```
 
 **Without `DATABASE_URL`, the store and engine tests print `SKIPPED` and pass without
@@ -53,7 +53,7 @@ Run the narrowest relevant check first, then widen in proportion to what you tou
 To run it by hand:
 
 ```sh
-DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/goat_merge \
+DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/merge \
 GOAT_MERGE_PUBLIC_URL=http://127.0.0.1:8080 \
 GOAT_MERGE_MASTER_KEY=$(openssl rand -hex 32) \
 cargo run -p goat-merge -- run
