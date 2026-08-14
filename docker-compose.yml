@@ -7,8 +7,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://goat:${POSTGRES_PASSWORD:-goat}@db:5432/goat_merge
-      GOAT_MERGE_PUBLIC_URL: ${GOAT_MERGE_PUBLIC_URL:?set this to the https address GitHub can reach}
-      GOAT_MERGE_MASTER_KEY: ${GOAT_MERGE_MASTER_KEY:?run `goat-merge run` once to be given one}
+      GOAT_MERGE_PUBLIC_URL: ${GOAT_MERGE_PUBLIC_URL:-}
+      GOAT_MERGE_MASTER_KEY: ${GOAT_MERGE_MASTER_KEY:-}
       LISTEN_ADDR: 0.0.0.0:8080
     ports:
       - "${GOAT_MERGE_PORT:-8080}:8080"
