@@ -1,0 +1,28 @@
+name: merge queue (forks)
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: make test
+
+# Copy this to .github/workflows/merge-queue-fork.yml in a repository that accepts pull
+# requests from forks.
+#
+# goat-merge treats the presence of that file as the repository saying "fork code can be run
+# here safely", and refuses to queue a fork pull request without it. Before believing it,
+# goat-merge checks that the file declares a permissions block, asks for no write permission,
+# and never mentions secrets. Those three things are what stop a stranger's test suite from
+# walking off with your deploy keys once their commits sit on a branch in your repository.
+#
+# Keep it that way:
+#   - no `secrets.` anywhere, and no `secrets:` passed to a reusable workflow
+#   - every permission read, never write, never write-all
+#   - GitHub-hosted runners, or self-hosted ones that are thrown away after each job

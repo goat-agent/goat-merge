@@ -1,0 +1,9 @@
+allow-branch = ["main"]
+shared-version = true
+consolidate-commits = true
+publish = false
+push = true
+tag = true
+tag-name = "v{{version}}"
+pre-release-commit-message = "release {{version}}"
+tag-message = "release {{version}}"

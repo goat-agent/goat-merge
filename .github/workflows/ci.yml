@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  console:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: pnpm typecheck
+        working-directory: web
+      - run: pnpm build
+        working-directory: web
+
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: goat
+          POSTGRES_PASSWORD: goat
+          POSTGRES_DB: goat_merge
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U goat"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      GOAT_MERGE_SKIP_WEB_BUILD: "1"
+      DATABASE_URL: postgres://goat:goat@127.0.0.1:5432/goat_merge
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
