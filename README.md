@@ -118,7 +118,7 @@ Point your editor at it for completion and inline errors.
 ## Fork pull requests
 
 If the repository takes pull requests from forks, copy
-[.github/workflows/merge-queue-fork.example.yml](.github/workflows/merge-queue-fork.example.yml)
+[.github/merge-queue-fork.example.yml](.github/merge-queue-fork.example.yml)
 to `.github/workflows/merge-queue-fork.yml`. Until you do, fork pull requests show as
 `Blocked` and are never merged.
 
