@@ -1,0 +1,36 @@
+@import "tailwindcss";
+@import "@/shared/config/tokens.css";
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--fill-active);
+}
+
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
