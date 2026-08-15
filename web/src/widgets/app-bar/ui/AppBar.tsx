@@ -1,9 +1,10 @@
 import { Settings } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 
-import { useRepositories } from "@/entities/repository";
+import { itsQueue, whereItLives } from "@/entities/repository";
 import { AccountMenu } from "@/features/account-menu";
 import type { RepositoryView } from "@/shared/api";
+import { cn } from "@/shared/lib";
 import type { Choice } from "@/shared/ui";
 import { Select } from "@/shared/ui";
 
@@ -31,27 +32,25 @@ function branchChoices(repository: RepositoryView | undefined): Choice[] {
   }));
 }
 
+const beside = "flex h-control shrink-0 items-center rounded-md px-2 text-ui transition-colors";
+
 export function AppBar({
   owner,
   name,
   branch,
   login,
+  repositories,
 }: {
   owner: string | null;
   name: string | null;
   branch: string | null;
   login: string;
+  repositories: RepositoryView[];
 }) {
   const navigate = useNavigate();
-  const listed = useRepositories(0).answer ?? [];
   const here = owner && name ? `${owner}/${name}` : null;
-  const looking = listed.find((one) => `${one.owner}/${one.name}` === here);
-
-  function goTo(repository: string, going: string | null) {
-    const next = listed.find((one) => `${one.owner}/${one.name}` === repository);
-    const on = going ?? next?.queues.at(0)?.branch ?? null;
-    navigate(on ? `/queue/${repository}/${on}` : `/settings/${repository}`);
-  }
+  const looking = repositories.find((one) => `${one.owner}/${one.name}` === here);
+  const itsOwnQueue = looking ? itsQueue(looking) : null;
 
   return (
     <header className="flex h-header shrink-0 items-center justify-between gap-3 border-b border-hairline px-3">
@@ -69,18 +68,21 @@ export function AppBar({
             <Select
               label="Repository"
               value={here}
-              options={repositoryChoices(listed, here)}
-              onPick={(picked) => goTo(picked, null)}
+              options={repositoryChoices(repositories, here)}
+              onPick={(picked) => {
+                const next = repositories.find((one) => `${one.owner}/${one.name}` === picked);
+                navigate(next ? whereItLives(next) : `/settings/${picked}`);
+              }}
             />
             <NavLink
               to={`/settings/${here}`}
               title={`Settings for ${here}`}
               aria-label={`Settings for ${here}`}
               className={({ isActive }) =>
-                [
+                cn(
                   "flex size-control shrink-0 items-center justify-center rounded-md transition-colors",
                   isActive ? "text-primary" : "text-ink-faint hover:bg-fill-hover hover:text-ink",
-                ].join(" ")
+                )
               }
             >
               <Settings className="size-3.5" />
@@ -90,17 +92,16 @@ export function AppBar({
                 label="Branch"
                 value={branch}
                 options={branchChoices(looking)}
-                onPick={(picked) => goTo(here, picked)}
+                onPick={(picked) => navigate(`/queue/${here}/${picked}`)}
               />
-            ) : (
-              <button
-                type="button"
-                onClick={() => goTo(here, null)}
-                className="flex h-control shrink-0 items-center rounded-md px-2 text-ui text-ink-faint transition-colors hover:bg-fill-hover hover:text-ink"
+            ) : itsOwnQueue ? (
+              <NavLink
+                to={itsOwnQueue}
+                className={cn(beside, "text-ink-faint hover:bg-fill-hover hover:text-ink")}
               >
-                Back to the queue
-              </button>
-            )}
+                Queue
+              </NavLink>
+            ) : null}
           </>
         ) : null}
       </div>

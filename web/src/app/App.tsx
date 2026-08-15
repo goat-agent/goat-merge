@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
-import { useRepositories } from "@/entities/repository";
-import { WhatWentWrong } from "@/entities/trouble";
+import { useRepositories, whereToStart } from "@/entities/repository";
+import { WhatWeHave, WhatWentWrong } from "@/entities/trouble";
 import { useViewer } from "@/entities/viewer";
 import { HistoryPage } from "@/pages/history";
 import { QueuePage } from "@/pages/queue";
@@ -12,6 +12,7 @@ import { SignInPage } from "@/pages/sign-in";
 import { TokenPage } from "@/pages/token";
 import type { RepositoryView } from "@/shared/api";
 import { api, isKind, Trouble, whenTheSessionEnds } from "@/shared/api";
+import type { Asked } from "@/shared/lib";
 import { useAsked, useEvery, useLive } from "@/shared/lib";
 import { Waiting } from "@/shared/ui";
 import { AppBar } from "@/widgets/app-bar";
@@ -72,11 +73,16 @@ function troubleInTheAddress(search: string): Trouble | null {
 function Console({ login }: { login: string }) {
   const repositories = useRepositories(useLive() + useEvery(30));
   const here = whereWeAre(useLocation().pathname);
-  const listed = repositories.answer ?? [];
 
   return (
     <div className="flex h-full flex-col">
-      <AppBar owner={here.owner} name={here.name} branch={here.branch} login={login} />
+      <AppBar
+        owner={here.owner}
+        name={here.name}
+        branch={here.branch}
+        login={login}
+        repositories={repositories.answer ?? []}
+      />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Routes>
           <Route path="/queue/:owner/:name/:branch" element={<QueuePage />} />
@@ -84,32 +90,27 @@ function Console({ login }: { login: string }) {
           <Route path="/settings/:owner/:name" element={<SettingsPage />} />
           <Route path="/setup" element={<SetupPage />} />
           <Route path="/token" element={<TokenPage />} />
-          <Route path="*" element={<Landing repositories={listed} />} />
+          <Route path="*" element={<Landing asked={repositories} />} />
         </Routes>
       </main>
     </div>
   );
 }
 
-function somewhereToStart(repositories: RepositoryView[]): string | null {
-  for (const repository of repositories) {
-    if (!repository.active) continue;
-    const queue = repository.queues.at(0);
-    if (queue) return `/queue/${repository.owner}/${repository.name}/${queue.branch}`;
-  }
-  const waiting = repositories.at(0);
-  return waiting ? `/settings/${waiting.owner}/${waiting.name}` : null;
-}
-
-function Landing({ repositories }: { repositories: RepositoryView[] }) {
-  const start = somewhereToStart(repositories);
-  if (start) return <Navigate to={start} replace />;
-
+function Landing({ asked }: { asked: Asked<RepositoryView[]> }) {
   return (
-    <div className="flex flex-1 items-center justify-center p-6 text-center">
-      <p className="max-w-measure text-ui text-ink-faint">
-        The App is not installed on any repository yet. Install it on GitHub and come back.
-      </p>
-    </div>
+    <WhatWeHave asked={asked} of="your repositories">
+      {(repositories) => {
+        const start = whereToStart(repositories);
+        if (start) return <Navigate to={start} replace />;
+        return (
+          <div className="flex flex-1 items-center justify-center p-6 text-center">
+            <p className="max-w-measure text-ui text-ink-faint">
+              The App is not installed on any repository yet. Install it on GitHub and come back.
+            </p>
+          </div>
+        );
+      }}
+    </WhatWeHave>
   );
 }

@@ -287,7 +287,7 @@ pub async fn enable(
 
     let mut opened = None;
     if how.write_config.unwrap_or(false) {
-        opened = Some(self_serve_config(&engine, who, &full, &branch, how.merge_method).await?);
+        opened = self_serve_config(&engine, who, &full, &branch, how.merge_method).await?;
     }
 
     engine
@@ -315,7 +315,10 @@ async fn self_serve_config(
     full: &str,
     branch: &str,
     method: Option<MergeMethod>,
-) -> Result<i32, Fault> {
+) -> Result<Option<i32>, Fault> {
+    if already_says_so(engine, who, full, branch).await? {
+        return Ok(None);
+    }
     let tip = engine.github.branch_tip(who, full, branch).await?;
     let working = "merge-queue/setup";
     engine.github.make_branch(who, full, working, &tip).await?;
@@ -349,7 +352,20 @@ async fn self_serve_config(
             ),
         )
         .await?;
-    Ok(opened.number)
+    Ok(Some(opened.number))
+}
+
+async fn already_says_so(
+    engine: &Engine,
+    who: As,
+    full: &str,
+    branch: &str,
+) -> Result<bool, Fault> {
+    let Some(written) = engine.github.file(who, full, FILE, branch).await? else {
+        return Ok(false);
+    };
+    Ok(goat_merge_core::Config::parse(&written)
+        .is_ok_and(|config| config.queue_for(branch).is_some()))
 }
 
 pub async fn disable(

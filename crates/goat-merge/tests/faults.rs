@@ -11,7 +11,7 @@ use goat_merge::github::{AppAuth, Github, GithubError};
 use goat_merge::settings::Settings;
 use serde_json::Value;
 use support::fake_github::{World, a_private_key, listening};
-use support::{a_seal, a_store_sealed_with};
+use support::{a_seal, a_store_sealed_with, an_id_of_its_own};
 
 async fn answered(fault: Fault) -> (StatusCode, Value) {
     let response = fault.into_response();
@@ -250,7 +250,7 @@ async fn a_server_for(with_a_repository: bool) -> Option<String> {
 async fn a_server_seen_by(
     with_a_repository: bool,
     permissions: &[(&str, &str)],
-) -> Option<(String, String)> {
+) -> Option<(String, String, String)> {
     a_server_holding(
         World::holding_one_ready_pull_request(),
         with_a_repository,
@@ -263,7 +263,7 @@ async fn a_server_holding(
     world: Arc<World>,
     with_a_repository: bool,
     permissions: &[(&str, &str)],
-) -> Option<(String, String)> {
+) -> Option<(String, String, String)> {
     let key = a_private_key()?;
     let store = a_store_sealed_with(a_seal()).await?;
     for (login, permission) in permissions {
@@ -289,13 +289,15 @@ async fn a_server_holding(
         github_api: api,
         github_web: "https://github.com".to_owned(),
     });
+    let id = an_id_of_its_own();
+    let repository = format!("acme/web-{id}");
     if with_a_repository {
         store
             .remember_installation(4242, "acme")
             .await
             .expect("an installation");
         store
-            .remember_repository(770_000, 4242, "acme", "web")
+            .remember_repository(id, 4242, "acme", &format!("web-{id}"))
             .await
             .expect("a repository");
     }
@@ -310,14 +312,14 @@ async fn a_server_holding(
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    Some((format!("http://{at}"), token))
+    Some((format!("http://{at}"), token, repository))
 }
 
 #[tokio::test]
 async fn a_deleted_app_is_named_instead_of_bouncing_somebody_to_a_github_404() {
     let world = World::holding_one_ready_pull_request();
     *world.app_is_gone.lock().expect("app") = true;
-    let Some((server, _)) = a_server_holding(world, false, &[]).await else {
+    let Some((server, _, _)) = a_server_holding(world, false, &[]).await else {
         return;
     };
 
@@ -391,12 +393,13 @@ async fn every_way_of_asking_wrongly_answers_the_same_json() {
 
 #[tokio::test]
 async fn a_queue_that_is_switched_off_says_so_instead_of_answering_ok() {
-    let Some((server, token)) = a_server_seen_by(true, &[("stranger", "admin")]).await else {
+    let Some((server, token, repository)) = a_server_seen_by(true, &[("stranger", "admin")]).await
+    else {
         return;
     };
 
     let response = reqwest::Client::new()
-        .post(format!("{server}/api/pull/acme/web/1/enqueue"))
+        .post(format!("{server}/api/pull/{repository}/1/enqueue"))
         .header("cookie", format!("goat_merge_session={token}"))
         .send()
         .await
@@ -412,17 +415,54 @@ async fn a_queue_that_is_switched_off_says_so_instead_of_answering_ok() {
 }
 
 #[tokio::test]
+async fn a_branch_that_is_already_configured_gets_no_pull_request_to_configure_it() {
+    let world = World::holding_one_ready_pull_request();
+    world.files.lock().expect("files").insert(
+        goat_merge_core::config::FILE.to_owned(),
+        "version: 1\n\nqueues:\n  - branch: main\n".to_owned(),
+    );
+    let Some((server, token, repository)) =
+        a_server_holding(Arc::clone(&world), true, &[("stranger", "admin")]).await
+    else {
+        return;
+    };
+
+    let body: Value = reqwest::Client::new()
+        .post(format!("{server}/api/repository/{repository}/enable"))
+        .header("cookie", format!("goat_merge_session={token}"))
+        .json(&serde_json::json!({ "branch": "main", "write_config": true }))
+        .send()
+        .await
+        .expect("an answer")
+        .json()
+        .await
+        .expect("json");
+
+    assert_eq!(body["ok"], true, "{body}");
+    assert!(
+        body["config_pull_request"].is_null(),
+        "the branch already says it has a queue, so there is nothing to open a pull request \
+         about: {body}"
+    );
+    assert!(
+        world.draft_pull_requests().is_empty(),
+        "an empty pull request is somebody's review request for no change"
+    );
+}
+
+#[tokio::test]
 async fn signing_in_does_not_let_somebody_read_a_repository_they_cannot_see() {
-    let Some((server, token)) = a_server_seen_by(true, &[("stranger", "none")]).await else {
+    let Some((server, token, repository)) = a_server_seen_by(true, &[("stranger", "none")]).await
+    else {
         return;
     };
 
     for path in [
-        "/api/repository/acme/web/diagnose",
-        "/api/queue/acme/web/main",
-        "/api/pull/acme/web/123",
-        "/api/history/acme/web/main",
-        "/api/insights/acme/web/main",
+        format!("/api/repository/{repository}/diagnose"),
+        format!("/api/queue/{repository}/main"),
+        format!("/api/pull/{repository}/123"),
+        format!("/api/history/{repository}/main"),
+        format!("/api/insights/{repository}/main"),
     ] {
         let response = reqwest::Client::new()
             .get(format!("{server}{path}"))
@@ -444,12 +484,13 @@ async fn signing_in_does_not_let_somebody_read_a_repository_they_cannot_see() {
 
 #[tokio::test]
 async fn somebody_with_read_access_can_still_read() {
-    let Some((server, token)) = a_server_seen_by(true, &[("stranger", "read")]).await else {
+    let Some((server, token, repository)) = a_server_seen_by(true, &[("stranger", "read")]).await
+    else {
         return;
     };
 
     let response = reqwest::Client::new()
-        .get(format!("{server}/api/repository/acme/web/diagnose"))
+        .get(format!("{server}/api/repository/{repository}/diagnose"))
         .header("cookie", format!("goat_merge_session={token}"))
         .send()
         .await
