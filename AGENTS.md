@@ -34,6 +34,10 @@ export DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/goat_merge
 running.** `cargo test --workspace` on a fresh clone therefore proves the queue logic and
 nothing else. CI always sets it.
 
+**Never point `DATABASE_URL` at a database a real server is using.** `app_credentials` holds
+one row, so the store tests overwrite whatever GitHub App is registered there, and GitHub only
+shows a private key once. The App has to be created again.
+
 ## Commands
 
 | Task | Command |
@@ -105,6 +109,11 @@ These are not style preferences. Breaking one lets a broken commit onto somebody
 - **Never change a repository's settings.** Read rulesets and branch protection, diagnose them,
   explain what is missing. Do not fix it for them. Requesting `Administration: write` is
   itself the bug.
+- **An installation counts only if somebody started it here.** The App is public, so anybody on
+  GitHub can install it from its own page. `/setup/install` mints a state, the callback will not
+  record an installation without it, and `react` drops the webhook for an installation it has
+  never heard of. Without that, a stranger's repositories land in the database and their queues
+  run on this server.
 - **`Waiting` and `Blocked` always name a reason.** A state with no reason is a support ticket.
 - **A sentence reaches a person only if somebody wrote it for that person.** Every other `Display`
   in this workspace — `StoreError`, `GithubError`, `serde`, `sqlx`, `jsonwebtoken`, axum's
@@ -125,12 +134,17 @@ The product is `goat-merge`. Inside GitHub it is not.
 | Where | Name |
 |---|---|
 | product, CLI, binary | `goat-merge` |
-| GitHub App | `Merge Queue` |
+| GitHub App | named on GitHub by whoever sets it up |
 | check run | `Merge Queue` |
 | label | `merge-queue` |
 | config file | `.github/merge-queue.yml` |
 | candidate branch | `merge-queue/candidate-*` |
 | fork workflow | `.github/workflows/merge-queue-fork.yml` |
+
+The App's name is not ours to set. The manifest leaves it out so GitHub can ask for it and say
+there and then whether it is taken — App names are unique across the whole of GitHub, so a name
+we chose would be refused for most people. It is the one name in this table a repository sees
+that we do not control, so the setup page says what it is for rather than filling it in.
 
 The App subscribes to `pull_request`, `pull_request_review`, `check_run`, `check_suite`,
 `status` and `push`, and to nothing else. GitHub refuses a manifest that asks for an event the
