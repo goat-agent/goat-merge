@@ -1,5 +1,5 @@
 export type Where = {
-  section: "queue" | "history" | "insights" | "settings" | null;
+  section: "queue" | "history" | "settings" | null;
   owner: string | null;
   name: string | null;
   branch: string | null;
@@ -11,7 +11,7 @@ export function whereWeAre(pathname: string): Where {
   const [section, owner, name, branch] = pathname.split("/").filter(Boolean);
   if (!owner || !name) return nowhere;
   if (section === "settings") return { section, owner, name, branch: null };
-  if (section === "queue" || section === "history" || section === "insights") {
+  if (section === "queue" || section === "history") {
     return branch ? { section, owner, name, branch } : nowhere;
   }
   return nowhere;

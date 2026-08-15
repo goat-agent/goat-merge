@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Standing } from "@/entities/queue-entry";
 import { WhatWeHave } from "@/entities/trouble";
 import { PullActions } from "@/features/pull-actions";
-import type { Timeline, Trial } from "@/shared/api";
+import type { QueueView, Row, Timeline, Trial } from "@/shared/api";
 import { api } from "@/shared/api";
 import { ago, cn, useAsked } from "@/shared/lib";
 import { Empty, Well } from "@/shared/ui";
@@ -15,12 +15,14 @@ export function DetailPanel({
   owner,
   name,
   number,
+  queue,
   beat,
   onChanged,
 }: {
   owner: string;
   name: string;
   number: number | null;
+  queue: QueueView | null;
   beat: number;
   onChanged: () => void;
 }) {
@@ -34,8 +36,14 @@ export function DetailPanel({
   if (number === null) {
     return (
       <Beside>
-        <div className="h-header shrink-0" />
-        <Empty>Pick a pull request to see why it is where it is.</Empty>
+        <div className="flex h-header shrink-0 items-center px-4">
+          <h2 className="text-caption uppercase text-ink-faint">This queue</h2>
+        </div>
+        {queue ? (
+          <HowItStands queue={queue} />
+        ) : (
+          <Empty>Pick a pull request to see why it is where it is.</Empty>
+        )}
       </Beside>
     );
   }
@@ -122,6 +130,49 @@ export function DetailPanel({
         }
       </WhatWeHave>
     </Beside>
+  );
+}
+
+function HowItStands({ queue }: { queue: QueueView }) {
+  const running = queue.entries.filter((row: Row) => row.settled_at === null);
+  const head = running.at(0);
+  const blocked = running.filter((row: Row) => row.status === "Blocked");
+
+  return (
+    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 text-ui">
+      <p className="text-ink">
+        {running.length === 0
+          ? "Nothing is in this queue."
+          : `${running.length} pull ${running.length === 1 ? "request is" : "requests are"} in this queue.`}
+      </p>
+
+      {head ? (
+        <Well>
+          <p className="font-mono text-mono text-ink-faint">#{head.pull_request}</p>
+          <Standing status={head.status} />
+          <p className="text-ink-faint">{head.detail}</p>
+          <p className="text-ink-faint">waiting {ago(head.requested_at)}</p>
+        </Well>
+      ) : null}
+
+      {queue.paused ? (
+        <p className="text-warning">
+          The queue is paused by {queue.paused_by ?? "someone"}, so nothing will merge until it is
+          resumed.
+        </p>
+      ) : null}
+
+      {blocked.length > 0 ? (
+        <p className="text-ink-faint">
+          {blocked.length} {blocked.length === 1 ? "is" : "are"} blocked and will not move until
+          somebody sees to them.
+        </p>
+      ) : null}
+
+      <p className="text-ink-faint">
+        Pick a pull request above to see which base it was verified against.
+      </p>
+    </div>
   );
 }
 

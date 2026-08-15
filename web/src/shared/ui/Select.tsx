@@ -2,6 +2,8 @@ import { ChevronDown } from "lucide-react";
 
 import { cn } from "@/shared/lib";
 
+export type Choice = { value: string; label: string };
+
 export function Select({
   label,
   value,
@@ -11,11 +13,13 @@ export function Select({
 }: {
   label: string;
   value: string;
-  options: string[];
+  options: Choice[];
   onPick: (picked: string) => void;
   className?: string;
 }) {
-  const known = options.includes(value) ? options : [value, ...options];
+  const known = options.some((option) => option.value === value)
+    ? options
+    : [{ value, label: value }, ...options];
   return (
     <span className={cn("relative inline-flex items-center", className)}>
       <select
@@ -28,8 +32,8 @@ export function Select({
         onChange={(event) => onPick(event.target.value)}
       >
         {known.map((option) => (
-          <option key={option} value={option}>
-            {option}
+          <option key={option.value} value={option.value}>
+            {option.label}
           </option>
         ))}
       </select>

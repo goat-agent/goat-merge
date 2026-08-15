@@ -5,7 +5,6 @@ import { useRepositories } from "@/entities/repository";
 import { WhatWentWrong } from "@/entities/trouble";
 import { useViewer } from "@/entities/viewer";
 import { HistoryPage } from "@/pages/history";
-import { InsightsPage } from "@/pages/insights";
 import { QueuePage } from "@/pages/queue";
 import { SettingsPage } from "@/pages/settings";
 import { SetupPage } from "@/pages/setup";
@@ -15,7 +14,7 @@ import type { RepositoryView } from "@/shared/api";
 import { api, isKind, Trouble, whenTheSessionEnds } from "@/shared/api";
 import { useAsked, useEvery, useLive } from "@/shared/lib";
 import { Waiting } from "@/shared/ui";
-import { SideNav } from "@/widgets/side-nav";
+import { AppBar } from "@/widgets/app-bar";
 
 import { whereWeAre } from "./whereWeAre";
 
@@ -76,14 +75,13 @@ function Console({ login }: { login: string }) {
   const listed = repositories.answer ?? [];
 
   return (
-    <div className="flex h-full">
-      <SideNav owner={here.owner} name={here.name} branch={here.branch} login={login} />
-      <main className="flex min-w-0 flex-1 flex-col">
+    <div className="flex h-full flex-col">
+      <AppBar owner={here.owner} name={here.name} branch={here.branch} login={login} />
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Routes>
           <Route path="/queue/:owner/:name/:branch" element={<QueuePage />} />
           <Route path="/history/:owner/:name/:branch" element={<HistoryPage />} />
-          <Route path="/insights/:owner/:name/:branch" element={<InsightsPage />} />
-          <Route path="/settings/:owner/:name" element={<SettingsPage login={login} />} />
+          <Route path="/settings/:owner/:name" element={<SettingsPage />} />
           <Route path="/setup" element={<SetupPage />} />
           <Route path="/token" element={<TokenPage />} />
           <Route path="*" element={<Landing repositories={listed} />} />
