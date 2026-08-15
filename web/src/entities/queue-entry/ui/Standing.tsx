@@ -32,10 +32,11 @@ export function Standing({ status }: { status: Status }) {
   const look = looks[status];
   const Icon = look.icon;
   return (
-    <span className={cn("inline-flex items-center gap-1.5 text-ui", look.tint)}>
+    <span className="inline-flex items-center gap-1.5 text-ui text-ink-soft">
       <Icon
         className={cn(
           "size-3.5 shrink-0",
+          look.tint,
           look.turning && "animate-spin motion-reduce:animate-none",
         )}
       />
