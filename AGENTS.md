@@ -27,16 +27,18 @@ Anything touching `crates/goat-merge` needs a PostgreSQL to talk to:
 
 ```sh
 docker compose up -d db
-export DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/goat_merge
+docker compose exec db createdb -U goat goat_merge_test   # once
+export DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/goat_merge_test
 ```
+
+**Test against `goat_merge_test`, never against a database a server is using.** The tests are
+destructive: `app_credentials` holds one row, so they overwrite whatever GitHub App is
+registered there, and GitHub shows a private key once. Losing it means creating the App again,
+and the old one is left behind in the organization.
 
 **Without `DATABASE_URL`, the store and engine tests print `SKIPPED` and pass without
 running.** `cargo test --workspace` on a fresh clone therefore proves the queue logic and
 nothing else. CI always sets it.
-
-**Never point `DATABASE_URL` at a database a real server is using.** `app_credentials` holds
-one row, so the store tests overwrite whatever GitHub App is registered there, and GitHub only
-shows a private key once. The App has to be created again.
 
 ## Commands
 
