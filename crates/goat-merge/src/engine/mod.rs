@@ -52,6 +52,47 @@ impl Engine {
             .await;
     }
 
+    pub async fn catch_the_app_up_with_our_address(&self) {
+        if !self.github.is_set_up() {
+            return;
+        }
+        let ours = self.settings.webhook_url();
+        let registered = match self.github.where_our_webhook_points().await {
+            Ok(registered) => registered,
+            Err(problem) if problem.is_missing() => {
+                tracing::error!(
+                    setup = %format!("{}/setup", self.settings.public_url),
+                    "the GitHub App this server was set up with no longer exists on GitHub"
+                );
+                return;
+            }
+            Err(problem) => {
+                tracing::warn!(problem = %problem, "could not read the App's webhook address");
+                return;
+            }
+        };
+        if registered.as_deref() == Some(ours.as_str()) {
+            return;
+        }
+        if let Err(problem) = self.github.point_our_webhook_at(&ours).await {
+            tracing::error!(problem = %problem, webhook = %ours, "could not move the App's webhook");
+            return;
+        }
+        let settings_page = match self.github.who_we_are().await {
+            Ok(app) => app.where_its_settings_are(&self.settings.github_web),
+            Err(_) => format!("{}/settings/apps", self.settings.github_web),
+        };
+        tracing::warn!(
+            was = registered.unwrap_or_default(),
+            webhook = %ours,
+            callback = %self.settings.callback_url(),
+            app = %settings_page,
+            "this server has moved, so the App's webhook was moved with it. GitHub does not let a \
+             server change its own sign-in address: add the callback URL to the App by hand or \
+             nobody will be able to sign in"
+        );
+    }
+
     pub fn announce(&self, what: &str) {
         let _ = self.news.send(what.to_owned());
     }

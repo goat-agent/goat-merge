@@ -126,6 +126,7 @@ async fn every_fault_says_what_it_is_and_where_to_go() {
     let expected = [
         ("not_signed_in", StatusCode::UNAUTHORIZED, true),
         ("not_set_up", StatusCode::SERVICE_UNAVAILABLE, true),
+        ("app_is_gone", StatusCode::SERVICE_UNAVAILABLE, true),
         ("not_installed_here", StatusCode::NOT_FOUND, true),
         ("no_queue_here", StatusCode::NOT_FOUND, true),
         ("never_queued", StatusCode::NOT_FOUND, true),
@@ -147,6 +148,7 @@ async fn every_fault_says_what_it_is_and_where_to_go() {
     let faults = [
         Fault::NotSignedIn,
         Fault::NotSetUp,
+        Fault::AppIsGone,
         Fault::NotInstalledHere {
             owner: "acme".to_owned(),
             name: "web".to_owned(),
@@ -247,9 +249,21 @@ async fn a_server_seen_by(
     with_a_repository: bool,
     permissions: &[(&str, &str)],
 ) -> Option<(String, String)> {
+    a_server_holding(
+        World::holding_one_ready_pull_request(),
+        with_a_repository,
+        permissions,
+    )
+    .await
+}
+
+async fn a_server_holding(
+    world: Arc<World>,
+    with_a_repository: bool,
+    permissions: &[(&str, &str)],
+) -> Option<(String, String)> {
     let key = a_private_key()?;
     let store = a_store_sealed_with(a_seal()).await?;
-    let world = World::holding_one_ready_pull_request();
     for (login, permission) in permissions {
         world
             .permissions
@@ -295,6 +309,40 @@ async fn a_server_seen_by(
         let _ = axum::serve(listener, app).await;
     });
     Some((format!("http://{at}"), token))
+}
+
+#[tokio::test]
+async fn a_deleted_app_is_named_instead_of_bouncing_somebody_to_a_github_404() {
+    let world = World::holding_one_ready_pull_request();
+    *world.app_is_gone.lock().expect("app") = true;
+    let Some((server, _)) = a_server_holding(world, false, &[]).await else {
+        return;
+    };
+
+    let answer = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("a client")
+        .get(format!("{server}/auth/github"))
+        .send()
+        .await
+        .expect("an answer");
+
+    let went = answer
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        went.contains("trouble=app_is_gone"),
+        "somebody signing in should be told the App is gone, not sent to GitHub to find a 404: \
+         {went}"
+    );
+    assert!(
+        !went.contains("github.com"),
+        "there is nothing to authorise against any more: {went}"
+    );
 }
 
 #[tokio::test]

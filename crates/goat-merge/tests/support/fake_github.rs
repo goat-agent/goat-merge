@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::Router;
 use axum::extract::{Path, State};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use serde_json::{Value, json};
 
@@ -38,6 +39,8 @@ type Published = (String, String, Option<String>, String);
 
 #[derive(Default)]
 pub struct World {
+    pub app_is_gone: Mutex<bool>,
+    pub webhook_url: Mutex<String>,
     pub gone: Mutex<bool>,
     pub permissions: Mutex<HashMap<String, String>>,
     pub base_sha: Mutex<String>,
@@ -173,6 +176,11 @@ pub async fn listening(world: Arc<World>) -> String {
                     "expires_at": "2099-01-01T00:00:00Z",
                 }))
             }),
+        )
+        .route("/app", get(who_the_app_is))
+        .route(
+            "/app/hook/config",
+            get(where_the_webhook_points).patch(point_the_webhook),
         )
         .route("/installation/repositories", get(installed_on))
         .route(repository, get(settings))
@@ -569,6 +577,37 @@ async fn merge(
         pull.merged = true;
     }
     axum::Json(json!({ "sha": landed }))
+}
+
+async fn who_the_app_is(State(world): State<Arc<World>>) -> Response {
+    if *world.app_is_gone.lock().expect("app") {
+        return nothing_here().await.into_response();
+    }
+    axum::Json(json!({
+        "slug": "merge-queue",
+        "owner": { "login": OWNER, "type": "Organization" },
+    }))
+    .into_response()
+}
+
+async fn where_the_webhook_points(State(world): State<Arc<World>>) -> Response {
+    if *world.app_is_gone.lock().expect("app") {
+        return nothing_here().await.into_response();
+    }
+    axum::Json(json!({ "url": world.webhook_url.lock().expect("webhook").clone() })).into_response()
+}
+
+async fn point_the_webhook(
+    State(world): State<Arc<World>>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    if *world.app_is_gone.lock().expect("app") {
+        return nothing_here().await.into_response();
+    }
+    if let Some(url) = body.get("url").and_then(Value::as_str) {
+        *world.webhook_url.lock().expect("webhook") = url.to_owned();
+    }
+    axum::Json(json!({ "url": world.webhook_url.lock().expect("webhook").clone() })).into_response()
 }
 
 async fn publish(

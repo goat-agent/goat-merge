@@ -40,6 +40,11 @@ const looks: Record<Kind, Look> = {
     tint: "text-warning",
     offer: { follow: "Set goat-merge up" },
   },
+  app_is_gone: {
+    icon: Wrench,
+    tint: "text-danger",
+    offer: { follow: "Set goat-merge up again" },
+  },
   not_installed_here: {
     icon: PackageOpen,
     tint: "text-warning",

@@ -1,6 +1,7 @@
 const kinds = {
   not_signed_in: null,
   not_set_up: null,
+  app_is_gone: null,
   not_installed_here: null,
   not_allowed: null,
   no_queue_here: null,

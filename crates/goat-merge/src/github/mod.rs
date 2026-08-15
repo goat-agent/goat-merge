@@ -139,6 +139,26 @@ impl Github {
         body: Option<Value>,
     ) -> Result<T, GithubError> {
         let token = self.token_for(who.0).await?;
+        self.send(self.asking(&token, method, path, body)).await
+    }
+
+    pub(crate) async fn as_ourselves<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<T, GithubError> {
+        let token = self.auth()?.as_the_app()?;
+        self.send(self.asking(&token, method, path, body)).await
+    }
+
+    fn asking(
+        &self,
+        token: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> RequestBuilder {
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.api))
@@ -148,7 +168,7 @@ impl Github {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        self.send(request).await
+        request
     }
 
     async fn send<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T, GithubError> {

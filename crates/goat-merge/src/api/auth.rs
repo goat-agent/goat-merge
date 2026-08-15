@@ -26,6 +26,13 @@ pub async fn begin(State(engine): State<Engine>) -> Response {
 }
 
 async fn starting_to_sign_in(engine: &Engine) -> Result<Response, Fault> {
+    if let Err(problem) = engine.github.who_we_are().await {
+        return Err(if problem.is_missing() {
+            Fault::AppIsGone
+        } else {
+            problem.into()
+        });
+    }
     let app = engine
         .store
         .app_credentials()

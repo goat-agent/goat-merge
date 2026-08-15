@@ -347,6 +347,41 @@ async fn our_check_only_turns_green_in_the_moment_before_the_merge() {
 }
 
 #[tokio::test]
+async fn moving_this_server_takes_the_app_webhook_with_it() {
+    let world = World::holding_one_ready_pull_request();
+    *world.webhook_url.lock().expect("webhook") =
+        "https://where-it-used-to-be.example.com/api/github/webhook".to_owned();
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing.engine.catch_the_app_up_with_our_address().await;
+
+    assert_eq!(
+        *standing.world.webhook_url.lock().expect("webhook"),
+        "https://merge.example.com/api/github/webhook",
+        "a server that has moved must not need a whole new App to keep hearing from GitHub"
+    );
+}
+
+#[tokio::test]
+async fn an_app_that_still_points_at_us_is_left_alone() {
+    let world = World::holding_one_ready_pull_request();
+    *world.webhook_url.lock().expect("webhook") =
+        "https://merge.example.com/api/github/webhook".to_owned();
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing.engine.catch_the_app_up_with_our_address().await;
+
+    assert_eq!(
+        *standing.world.webhook_url.lock().expect("webhook"),
+        "https://merge.example.com/api/github/webhook"
+    );
+}
+
+#[tokio::test]
 async fn the_check_links_to_the_pull_request_it_is_about() {
     let world = World::holding_one_ready_pull_request();
     world.checks_on("head-one", vec![passing("test", "2099-01-01T00:00:00Z")]);
