@@ -16,10 +16,10 @@ function howItIsGoing(repository: RepositoryView): string {
   return "";
 }
 
-function repositoryChoices(listed: RepositoryView[]): Choice[] {
+function repositoryChoices(listed: RepositoryView[], here: string): Choice[] {
   return listed.map((one) => {
     const where = `${one.owner}/${one.name}`;
-    const going = howItIsGoing(one);
+    const going = where === here ? "" : howItIsGoing(one);
     return { value: where, label: going ? `${where} — ${going}` : where };
   });
 }
@@ -69,7 +69,7 @@ export function AppBar({
             <Select
               label="Repository"
               value={here}
-              options={repositoryChoices(listed)}
+              options={repositoryChoices(listed, here)}
               onPick={(picked) => goTo(picked, null)}
             />
             <NavLink

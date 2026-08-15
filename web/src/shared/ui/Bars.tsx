@@ -13,7 +13,7 @@ export function Columns({ points, tone = "bg-success" }: { points: Point[]; tone
           <span
             key={point.label}
             title={`${point.label}: ${point.value}`}
-            className={cn("min-w-0 flex-1 rounded-t-sm", point.value === 0 ? null : tone)}
+            className={cn("min-w-0 max-w-8 flex-1 rounded-t-sm", point.value === 0 ? null : tone)}
             style={{ height: `${(point.value / most) * 100}%` }}
           />
         ))}

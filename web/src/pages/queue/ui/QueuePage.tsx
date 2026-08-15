@@ -20,6 +20,13 @@ function stillWaiting(row: Row): boolean {
   return row.settled_at === null && !beingVerified.includes(row.status);
 }
 
+function howItEnded(rows: Row[]): string {
+  const merged = rows.filter((row) => row.status === "Merged").length;
+  const turnedAway = rows.length - merged;
+  if (turnedAway === 0) return `${merged} merged`;
+  return `${merged} merged, ${turnedAway} did not`;
+}
+
 export function QueuePage() {
   const { owner = "", name = "", branch = "" } = useParams();
   const beat = useLive() + useEvery(15);
@@ -56,7 +63,7 @@ export function QueuePage() {
                   nothing={
                     waiting.length === 0
                       ? "Nothing is in this queue."
-                      : "Nothing is being verified right now."
+                      : "Nothing is being verified right now, so the queue is not moving."
                   }
                   aside={
                     <div className="flex items-center gap-3">
@@ -77,18 +84,21 @@ export function QueuePage() {
                   }
                 />
 
-                <QueueBoard
-                  label="Waiting"
-                  note={head ? `behind #${head.pull_request}` : "nothing ahead"}
-                  rows={waiting}
-                  chosen={chosen}
-                  onChoose={choose}
-                  roomy
-                  nothing="Nobody is waiting for a turn."
-                />
+                {waiting.length > 0 || flying.length > 0 ? (
+                  <QueueBoard
+                    label="Waiting"
+                    {...(head ? { note: `behind #${head.pull_request}` } : {})}
+                    rows={waiting}
+                    chosen={chosen}
+                    onChoose={choose}
+                    roomy
+                    nothing="Nobody is waiting for a turn."
+                  />
+                ) : null}
 
                 <QueueBoard
-                  label="Merged"
+                  label="Done"
+                  note={howItEnded(landed.answer ?? [])}
                   rows={recent}
                   chosen={chosen}
                   onChoose={choose}

@@ -169,9 +169,11 @@ function HowItStands({ queue }: { queue: QueueView }) {
         </p>
       ) : null}
 
-      <p className="text-ink-faint">
-        Pick a pull request above to see which base it was verified against.
-      </p>
+      {running.length > 0 ? (
+        <p className="text-ink-faint">
+          Pick a pull request to see which base it was verified against.
+        </p>
+      ) : null}
     </div>
   );
 }
