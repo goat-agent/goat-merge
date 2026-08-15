@@ -1,6 +1,6 @@
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use goat_merge_core::config::{FILE, LABEL};
 use goat_merge_core::{CHECK_NAME, MergeMethod};
 use serde::Deserialize;
@@ -17,7 +17,6 @@ use crate::store::credentials::AppCredentials;
 pub async fn manifest(State(engine): State<Engine>) -> Response {
     let settings = &engine.settings;
     let manifest = json!({
-        "name": "APP_NAME",
         "url": settings.public_url,
         "hook_attributes": { "url": settings.webhook_url(), "active": true },
         "redirect_url": settings.setup_url(),
@@ -25,7 +24,7 @@ pub async fn manifest(State(engine): State<Engine>) -> Response {
         "setup_url": settings.callback_url(),
         "request_oauth_on_install": true,
         "setup_on_update": false,
-        "public": false,
+        "public": true,
         "default_permissions": {
             "metadata": "read",
             "contents": "write",
@@ -44,8 +43,7 @@ pub async fn manifest(State(engine): State<Engine>) -> Response {
         ],
     });
     Answer(json!({
-        "personal": format!("{}/settings/apps/new", settings.github_web),
-        "organization": format!("{}/organizations/ORG/settings/apps/new", settings.github_web),
+        "where": format!("{}/settings/apps/new", settings.github_web),
         "manifest": manifest.to_string(),
         "already_set_up": engine.github.is_set_up(),
     }))
@@ -125,11 +123,28 @@ async fn taking_the_new_app(
         })?;
     engine.github.adopt(auth);
 
-    Ok(Redirect::to(&format!(
-        "{}/apps/{}/installations/new",
-        engine.settings.github_web, converted.slug
-    ))
-    .into_response())
+    where_somebody_installs_it(engine, &converted.slug)
+}
+
+pub async fn install(State(engine): State<Engine>) -> Response {
+    match engine.store.app_credentials().await {
+        Ok(Some(app)) => match where_somebody_installs_it(&engine, &app.slug) {
+            Ok(response) => response,
+            Err(fault) => fault.told_to_the_browser(),
+        },
+        Ok(None) => Fault::NotSetUp.told_to_the_browser(),
+        Err(problem) => Fault::from(problem).told_to_the_browser(),
+    }
+}
+
+fn where_somebody_installs_it(engine: &Engine, slug: &str) -> Result<Response, Fault> {
+    super::auth::a_state_to_come_back_with(
+        &engine.settings,
+        &format!(
+            "{}/apps/{slug}/installations/new?state=",
+            engine.settings.github_web
+        ),
+    )
 }
 
 pub async fn diagnose(

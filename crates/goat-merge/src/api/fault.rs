@@ -37,6 +37,7 @@ pub enum Fault {
     NotSignedIn,
     NotSetUp,
     AppIsGone,
+    DidNotStartHere,
     NotInstalledHere {
         owner: String,
         name: String,
@@ -92,6 +93,7 @@ impl Fault {
             Self::NotSignedIn => "not_signed_in",
             Self::NotSetUp => "not_set_up",
             Self::AppIsGone => "app_is_gone",
+            Self::DidNotStartHere => "did_not_start_here",
             Self::NotInstalledHere { .. } => "not_installed_here",
             Self::NotAllowed { .. } => "not_allowed",
             Self::NoQueueHere { .. } => "no_queue_here",
@@ -110,7 +112,7 @@ impl Fault {
 
     fn status(&self) -> StatusCode {
         match self {
-            Self::NotSignedIn => StatusCode::UNAUTHORIZED,
+            Self::NotSignedIn | Self::DidNotStartHere => StatusCode::UNAUTHORIZED,
             Self::NotAllowed { .. } => StatusCode::FORBIDDEN,
             Self::NotInstalledHere { .. }
             | Self::NoQueueHere { .. }
@@ -140,6 +142,9 @@ impl Fault {
             Self::AppIsGone => "The GitHub App this server was set up with no longer exists on \
                                 GitHub. Nobody can sign in and nothing will merge until a new one \
                                 is created here."
+                .to_owned(),
+            Self::DidNotStartHere => "This did not start on this server, so nothing was recorded. \
+                                      Open goat-merge and begin from there."
                 .to_owned(),
             Self::NotInstalledHere { owner, name } => format!(
                 "The Merge Queue App is not installed on {owner}/{name}, so this server cannot \
@@ -221,7 +226,7 @@ impl Fault {
 
     fn somewhere_to_go(&self) -> Option<String> {
         match self {
-            Self::NotSignedIn => Some("/auth/github".to_owned()),
+            Self::NotSignedIn | Self::DidNotStartHere => Some("/auth/github".to_owned()),
             Self::NotSetUp | Self::AppIsGone => Some("/setup".to_owned()),
             Self::NotInstalledHere { owner, name } => Some(format!(
                 "https://github.com/{owner}/{name}/settings/installations"

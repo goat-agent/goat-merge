@@ -41,6 +41,14 @@ impl Engine {
             return Ok(());
         }
 
+        if !self.store.installation_started_here(id).await? {
+            tracing::info!(
+                installation = id,
+                account,
+                "ignoring an installation that was not started on this server"
+            );
+            return Ok(());
+        }
         self.store.remember_installation(id, account).await?;
         for listed in ["repositories", "repositories_added"] {
             let Some(repositories) = payload.get(listed).and_then(Value::as_array) else {

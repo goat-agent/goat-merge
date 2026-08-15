@@ -35,6 +35,14 @@ impl Store {
         Ok(())
     }
 
+    pub async fn installation_started_here(&self, id: i64) -> Result<bool, StoreError> {
+        let found: Option<(i64,)> = sqlx::query_as("select id from installations where id = $1")
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(found.is_some())
+    }
+
     pub async fn forget_installation(&self, id: i64) -> Result<(), StoreError> {
         sqlx::query("update installations set removed_at = now() where id = $1")
             .bind(id)

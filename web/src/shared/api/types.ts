@@ -235,15 +235,13 @@ export const readsAsACliToken: Read<CliToken> = shape((given) => ({
 }));
 
 export type Manifest = {
-  personal: string;
-  organization: string;
+  where: string;
   manifest: string;
   already_set_up: boolean;
 };
 
 export const readsAsAManifest: Read<Manifest> = shape((given) => ({
-  personal: need(text, given.personal),
-  organization: need(text, given.organization),
+  where: need(text, given.where),
   manifest: need(text, given.manifest),
   already_set_up: need(yesNo, given.already_set_up),
 }));

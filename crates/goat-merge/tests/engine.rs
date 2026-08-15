@@ -347,6 +347,42 @@ async fn our_check_only_turns_green_in_the_moment_before_the_merge() {
 }
 
 #[tokio::test]
+async fn an_installation_nobody_started_here_is_ignored() {
+    let world = World::holding_one_ready_pull_request();
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+    let a_stranger = an_id_of_its_own();
+
+    standing
+        .engine
+        .react_to(
+            "installation",
+            &serde_json::json!({
+                "action": "created",
+                "installation": {
+                    "id": a_stranger,
+                    "account": { "login": "somebody-else" },
+                },
+                "repositories": [{ "id": 5_000_001, "full_name": "somebody-else/theirs" }],
+            }),
+        )
+        .await
+        .expect("a webhook is answered even when it is ignored");
+
+    assert!(
+        !standing
+            .engine
+            .store
+            .installation_started_here(a_stranger)
+            .await
+            .expect("a lookup"),
+        "the App is public, so anybody on GitHub can install it. Only an installation somebody \
+         began on this server belongs to this server"
+    );
+}
+
+#[tokio::test]
 async fn moving_this_server_takes_the_app_webhook_with_it() {
     let world = World::holding_one_ready_pull_request();
     *world.webhook_url.lock().expect("webhook") =

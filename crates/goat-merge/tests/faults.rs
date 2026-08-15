@@ -127,6 +127,7 @@ async fn every_fault_says_what_it_is_and_where_to_go() {
         ("not_signed_in", StatusCode::UNAUTHORIZED, true),
         ("not_set_up", StatusCode::SERVICE_UNAVAILABLE, true),
         ("app_is_gone", StatusCode::SERVICE_UNAVAILABLE, true),
+        ("did_not_start_here", StatusCode::UNAUTHORIZED, true),
         ("not_installed_here", StatusCode::NOT_FOUND, true),
         ("no_queue_here", StatusCode::NOT_FOUND, true),
         ("never_queued", StatusCode::NOT_FOUND, true),
@@ -149,6 +150,7 @@ async fn every_fault_says_what_it_is_and_where_to_go() {
         Fault::NotSignedIn,
         Fault::NotSetUp,
         Fault::AppIsGone,
+        Fault::DidNotStartHere,
         Fault::NotInstalledHere {
             owner: "acme".to_owned(),
             name: "web".to_owned(),
