@@ -30,10 +30,6 @@ export function App() {
     return <Waiting of="goat-merge" />;
   }
 
-  if (ended) {
-    return <WhatWentWrong trouble={ended} />;
-  }
-
   if (!viewer.answer) {
     if (health.trouble && health.trouble.kind !== "not_signed_in") {
       return <WhatWentWrong trouble={health.trouble} onAgain={health.again} />;
@@ -47,6 +43,10 @@ export function App() {
         />
       </Routes>
     );
+  }
+
+  if (ended) {
+    return <WhatWentWrong trouble={ended} />;
   }
 
   return <Console login={viewer.answer.login} />;
