@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use goat_merge_core::{Config, ConfigError, Enqueue, MergeMethod, Mode};
+use goat_merge_core::{Config, ConfigError, Enqueue, MergeMethod};
 
 #[test]
 fn the_smallest_useful_config_is_a_version_and_a_branch() {
@@ -8,7 +8,6 @@ fn the_smallest_useful_config_is_a_version_and_a_branch() {
 
     let queue = config.queue_for("main").expect("main should have a queue");
     assert_eq!(queue.enqueue, Enqueue::Manual);
-    assert_eq!(queue.mode, Mode::Serial);
     assert_eq!(queue.merge_method, None);
     assert_eq!(queue.check_timeout, Duration::from_secs(45 * 60));
 }

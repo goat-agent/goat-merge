@@ -24,8 +24,6 @@ pub struct Queue {
     pub enqueue: Enqueue,
     #[serde(default)]
     pub merge_method: Option<MergeMethod>,
-    #[serde(default)]
-    pub mode: Mode,
     #[serde(default = "half_an_hour_and_a_quarter", deserialize_with = "duration")]
     pub check_timeout: Duration,
 }
@@ -36,13 +34,6 @@ pub enum Enqueue {
     #[default]
     Manual,
     Automatic,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum Mode {
-    #[default]
-    Serial,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -92,7 +83,6 @@ impl Queue {
             branch: branch.into(),
             enqueue: Enqueue::Manual,
             merge_method: None,
-            mode: Mode::Serial,
             check_timeout: half_an_hour_and_a_quarter(),
         }
     }
