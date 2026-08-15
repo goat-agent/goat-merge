@@ -34,6 +34,8 @@ pub struct Check {
     pub started_at: String,
 }
 
+type Published = (String, String, Option<String>, String);
+
 #[derive(Default)]
 pub struct World {
     pub gone: Mutex<bool>,
@@ -51,7 +53,7 @@ pub struct World {
     pub drafts: Mutex<Vec<i32>>,
     pub closed: Mutex<Vec<i32>>,
     pub deleted_branches: Mutex<Vec<String>>,
-    pub published: Mutex<Vec<(String, String, Option<String>)>>,
+    pub published: Mutex<Vec<Published>>,
     pub comments: Mutex<Vec<(i32, String)>>,
     pub labels_removed: Mutex<Vec<(i32, String)>>,
     next_draft: Mutex<i32>,
@@ -106,7 +108,7 @@ impl World {
             .lock()
             .expect("published")
             .iter()
-            .map(|(_, _, conclusion)| conclusion.clone())
+            .map(|(_, _, conclusion, _)| conclusion.clone())
             .collect()
     }
 
@@ -115,7 +117,16 @@ impl World {
             .lock()
             .expect("published")
             .iter()
-            .map(|(_, title, _)| title.clone())
+            .map(|(_, title, _, _)| title.clone())
+            .collect()
+    }
+
+    pub fn where_the_check_pointed(&self) -> Vec<String> {
+        self.published
+            .lock()
+            .expect("published")
+            .iter()
+            .map(|(_, _, _, details)| details.clone())
             .collect()
     }
 
@@ -577,6 +588,10 @@ async fn publish(
         body.get("conclusion")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        body.get("details_url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
     ));
     axum::Json(json!({ "id": 1 }))
 }

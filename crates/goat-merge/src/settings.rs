@@ -58,8 +58,11 @@ impl Settings {
         format!("{}/setup/github", self.public_url)
     }
 
-    pub fn queue_url(&self, repository: &str, branch: &str) -> String {
-        format!("{}/queue/{repository}/{branch}", self.public_url)
+    pub fn queue_url(&self, repository: &str, branch: &str, pull_request: i32) -> String {
+        format!(
+            "{}/queue/{repository}/{branch}?pull={pull_request}",
+            self.public_url
+        )
     }
 }
 

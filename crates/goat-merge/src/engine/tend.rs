@@ -13,6 +13,12 @@ use crate::store::audit::US;
 use crate::store::queue::{Attempt, Entry, Queue};
 use crate::store::repositories::Repository;
 
+pub(crate) struct WhatTheCheckIsAbout<'a> {
+    pub head: &'a str,
+    pub pull_request: i32,
+    pub branch: &'a str,
+}
+
 struct Tending {
     who: As,
     repository: Repository,
@@ -126,10 +132,13 @@ impl Engine {
         self.show(
             installation,
             &full,
-            &pull.head.sha,
+            &WhatTheCheckIsAbout {
+                head: &pull.head.sha,
+                pull_request: number,
+                branch: &queue.branch,
+            },
             &status,
             Some("cancelled"),
-            &queue.branch,
         )
         .await?;
         self.announce(&full);
@@ -345,10 +354,13 @@ impl Engine {
             self.show(
                 tending.who,
                 &tending.name,
-                looked.snapshot.head.as_str(),
+                &WhatTheCheckIsAbout {
+                    head: looked.snapshot.head.as_str(),
+                    pull_request: entry.pull_request,
+                    branch: &tending.queue.branch,
+                },
                 &status,
                 Some("cancelled"),
-                &tending.queue.branch,
             )
             .await?;
         }
@@ -395,8 +407,18 @@ impl Engine {
                 .github
                 .pull_request(who, name, entry.pull_request)
                 .await?;
-            self.show(who, name, &looked.head.sha, &status, None, &queue.branch)
-                .await?;
+            self.show(
+                who,
+                name,
+                &WhatTheCheckIsAbout {
+                    head: &looked.head.sha,
+                    pull_request: entry.pull_request,
+                    branch: &queue.branch,
+                },
+                &status,
+                None,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -485,10 +507,13 @@ impl Engine {
                     self.show(
                         tending.who,
                         &tending.name,
-                        head,
+                        &WhatTheCheckIsAbout {
+                            head,
+                            pull_request: entry.pull_request,
+                            branch: &tending.queue.branch,
+                        },
                         &status,
                         None,
-                        &tending.queue.branch,
                     )
                     .await?;
                     if matches!(status, Status::Blocked(_)) {
@@ -508,10 +533,13 @@ impl Engine {
                     self.show(
                         tending.who,
                         &tending.name,
-                        head,
+                        &WhatTheCheckIsAbout {
+                            head,
+                            pull_request: entry.pull_request,
+                            branch: &tending.queue.branch,
+                        },
                         &status,
                         None,
-                        &tending.queue.branch,
                     )
                     .await?;
                 }
@@ -527,10 +555,13 @@ impl Engine {
                     self.show(
                         tending.who,
                         &tending.name,
-                        head,
+                        &WhatTheCheckIsAbout {
+                            head,
+                            pull_request: entry.pull_request,
+                            branch: &tending.queue.branch,
+                        },
                         &status,
                         None,
-                        &tending.queue.branch,
                     )
                     .await?;
                 }
@@ -593,10 +624,13 @@ impl Engine {
                 self.show(
                     tending.who,
                     &tending.name,
-                    head.as_str(),
+                    &WhatTheCheckIsAbout {
+                        head: head.as_str(),
+                        pull_request: entry.pull_request,
+                        branch: &tending.queue.branch,
+                    },
                     &status,
                     None,
-                    &tending.queue.branch,
                 )
                 .await?;
                 return Ok(());
@@ -653,10 +687,13 @@ impl Engine {
         self.show(
             tending.who,
             &tending.name,
-            head,
+            &WhatTheCheckIsAbout {
+                head,
+                pull_request: entry.pull_request,
+                branch: &tending.queue.branch,
+            },
             &Status::Merging,
             Some("success"),
-            &tending.queue.branch,
         )
         .await?;
 
@@ -718,10 +755,13 @@ impl Engine {
                 self.show(
                     tending.who,
                     &tending.name,
-                    head,
+                    &WhatTheCheckIsAbout {
+                        head,
+                        pull_request: entry.pull_request,
+                        branch: &tending.queue.branch,
+                    },
                     &status,
                     None,
-                    &tending.queue.branch,
                 )
                 .await?;
                 if problem.is_worth_another_try() {
@@ -753,10 +793,13 @@ impl Engine {
         self.show(
             tending.who,
             &tending.name,
-            head,
+            &WhatTheCheckIsAbout {
+                head,
+                pull_request: entry.pull_request,
+                branch: &tending.queue.branch,
+            },
             status,
             None,
-            &tending.queue.branch,
         )
         .await?;
         self.github
@@ -818,10 +861,9 @@ impl Engine {
         &self,
         who: As,
         name: &str,
-        head: &str,
+        about: &WhatTheCheckIsAbout<'_>,
         status: &Status,
         conclusion: Option<&str>,
-        branch: &str,
     ) -> Result<(), EngineError> {
         let conclusion = conclusion.or(match status {
             Status::Merged => Some("success"),
@@ -835,11 +877,13 @@ impl Engine {
                 name,
                 &WhatTheCheckSays {
                     name: CHECK_NAME,
-                    head,
+                    head: about.head,
                     conclusion,
                     title: status.headline(),
                     summary: &status.to_string(),
-                    details_url: &self.settings.queue_url(name, branch),
+                    details_url: &self
+                        .settings
+                        .queue_url(name, about.branch, about.pull_request),
                 },
             )
             .await?;

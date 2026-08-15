@@ -336,13 +336,36 @@ async fn our_check_only_turns_green_in_the_moment_before_the_merge() {
     let published = standing.world.published.lock().expect("published").clone();
     let green = published
         .iter()
-        .filter(|(_, _, conclusion)| conclusion.as_deref() == Some("success"))
+        .filter(|(_, _, conclusion, _)| conclusion.as_deref() == Some("success"))
         .count();
     assert_eq!(green, 1, "the gate opens once, for the verified state");
     assert_eq!(
-        published.last().map(|(_, title, _)| title.as_str()),
+        published.last().map(|(_, title, _, _)| title.as_str()),
         Some("Merging"),
         "the last thing published before the merge is the state that allows it"
+    );
+}
+
+#[tokio::test]
+async fn the_check_links_to_the_pull_request_it_is_about() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2099-01-01T00:00:00Z")]);
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend");
+
+    let pointed = standing.world.where_the_check_pointed();
+    assert!(!pointed.is_empty(), "our check should have been published");
+    assert!(
+        pointed.iter().all(|url| url.ends_with("?pull=123")),
+        "somebody following the check from their own pull request lands on that pull request, \
+         not in the middle of a list: {pointed:?}"
     );
 }
 
