@@ -393,15 +393,14 @@ fn shape(pull: &Pull) -> Value {
 
 async fn reviews(
     State(world): State<Arc<World>>,
-    Path((_owner, _repo, _number)): Path<(String, String, i32)>,
+    Path((_owner, _repo, number)): Path<(String, String, i32)>,
 ) -> axum::Json<Value> {
     let how_many = *world.approvals.lock().expect("approvals");
     let head = world
         .pulls
         .lock()
         .expect("pulls")
-        .values()
-        .next()
+        .get(&number)
         .map(|pull| pull.head.clone())
         .unwrap_or_default();
     axum::Json(Value::Array(
