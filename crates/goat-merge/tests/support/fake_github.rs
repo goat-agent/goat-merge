@@ -59,6 +59,8 @@ pub struct World {
     pub published: Mutex<Vec<Published>>,
     pub comments: Mutex<Vec<(i32, String)>>,
     pub labels_removed: Mutex<Vec<(i32, String)>>,
+    pub made_branches: Mutex<Vec<String>>,
+    pub heads_that_conflict: Mutex<Vec<String>>,
     next_draft: Mutex<i32>,
 }
 
@@ -89,6 +91,41 @@ impl World {
             },
         );
         world
+    }
+
+    pub fn also_holding(&self, number: i32, head: &str) {
+        self.pulls.lock().expect("pulls").insert(
+            number,
+            Pull {
+                number,
+                state: "open".to_owned(),
+                title: format!("chore: something else ({number})"),
+                head: head.to_owned(),
+                base: "main".to_owned(),
+                draft: false,
+                merged: false,
+                mergeable: Some(true),
+                labels: vec!["merge-queue".to_owned()],
+                from_fork: false,
+            },
+        );
+    }
+
+    pub fn candidate_branches(&self) -> Vec<String> {
+        self.made_branches
+            .lock()
+            .expect("made")
+            .iter()
+            .filter(|branch| branch.starts_with("merge-queue/candidate-"))
+            .cloned()
+            .collect()
+    }
+
+    pub fn nothing_merges_into(&self, head: &str) {
+        self.heads_that_conflict
+            .lock()
+            .expect("conflicts")
+            .push(head.to_owned());
     }
 
     pub fn checks_on(&self, sha: &str, checks: Vec<Check>) {
@@ -468,6 +505,7 @@ async fn make_ref(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    world.made_branches.lock().expect("made").push(name.clone());
     world.branches.lock().expect("branches").insert(name, sha);
     axum::Json(json!({}))
 }
@@ -498,20 +536,33 @@ async fn drop_ref(
 async fn merge_into(
     State(world): State<Arc<World>>,
     axum::Json(body): axum::Json<Value>,
-) -> axum::Json<Value> {
+) -> Response {
     let base = body
         .get("base")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
     let head = body.get("head").and_then(Value::as_str).unwrap_or_default();
+    if world
+        .heads_that_conflict
+        .lock()
+        .expect("conflicts")
+        .iter()
+        .any(|refused| refused == head)
+    {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(json!({ "message": "Merge conflict" })),
+        )
+            .into_response();
+    }
     let candidate = format!("candidate-of-{head}");
     world
         .branches
         .lock()
         .expect("branches")
         .insert(base, candidate.clone());
-    axum::Json(json!({ "sha": candidate }))
+    axum::Json(json!({ "sha": candidate })).into_response()
 }
 
 async fn pulls_for_head(State(world): State<Arc<World>>) -> axum::Json<Value> {

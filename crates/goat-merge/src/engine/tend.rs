@@ -1,7 +1,8 @@
 use goat_merge_core::config::{self, Config};
 use goat_merge_core::{
-    CHECK_NAME, Conclusion, Decision, Enqueue, InQueue, MergeMethod, Next, NotQueued,
-    Queue as QueueRules, Readiness, Sha, Status, Verification, WhyFailed, assess, decide,
+    Aboard, CHECK_NAME, Conclusion, Enqueue, InQueue, MergeMethod, Next, NotQueued,
+    Queue as QueueRules, Readiness, Sha, Status, Verification, WhyFailed, after_a_batch, assess,
+    decide, how_many_to_verify,
 };
 use time::{Duration, OffsetDateTime};
 
@@ -27,6 +28,59 @@ struct Tending {
     rules: QueueRules,
     base: WhereTheBaseIs,
     required: Vec<String>,
+}
+
+struct Riding {
+    entry: Entry,
+    head: String,
+    title: String,
+    status: Status,
+    changed: bool,
+}
+
+struct TheBatch {
+    riding: Vec<Riding>,
+    attempt: Option<Attempt>,
+    next: Next,
+}
+
+impl Riding {
+    fn check_is_about<'a>(&'a self, branch: &'a str) -> WhatTheCheckIsAbout<'a> {
+        WhatTheCheckIsAbout {
+            head: &self.head,
+            pull_request: self.entry.pull_request,
+            branch,
+        }
+    }
+}
+
+fn what_to_call_the_candidate(aboard: &[Aboard], onto: &Sha) -> String {
+    let first = aboard.first().map_or(0, |one| one.number);
+    let sha7: String = onto.as_str().chars().take(7).collect();
+    match aboard.len() {
+        0 | 1 => format!("merge-queue/candidate-{first}-{sha7}"),
+        many => format!("merge-queue/candidate-{first}-and-{}-more-{sha7}", many - 1),
+    }
+}
+
+fn what_to_call_the_draft(riding: &[&Riding]) -> String {
+    match riding {
+        [one] => format!("Merge queue: #{} {}", one.entry.pull_request, one.title),
+        many => format!("Merge queue: {} pull requests together", many.len()),
+    }
+}
+
+fn what_the_draft_explains(riding: &[&Riding], branch: &str) -> String {
+    let listed = riding
+        .iter()
+        .map(|one| format!("- #{} {}", one.entry.pull_request, one.title))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Verifying these on top of `{branch}`, in this order:\n\n{listed}\n\nThis pull request \
+         only exists to run the repository's checks and is closed automatically. If it fails, \
+         fewer will be verified together next time until the one at fault is found."
+    )
 }
 
 impl Engine {
@@ -63,7 +117,7 @@ impl Engine {
             .queue_for(repository.id, &pull.base.branch)
             .await?;
         let entry = self.store.enter(queue.id, number, who, &pull.title).await?;
-        if let Some(attempt) = self.store.live_attempt(entry.id).await? {
+        if let Some(attempt) = self.store.verification_carrying(entry.id).await? {
             self.store
                 .discard_attempt(attempt.id, "asked to start again")
                 .await?;
@@ -107,7 +161,7 @@ impl Engine {
             .queue_by_id(entry.queue_id)
             .await?
             .ok_or(EngineError::NoQueue(entry.queue_id))?;
-        if let Some(attempt) = self.store.live_attempt(entry.id).await? {
+        if let Some(attempt) = self.store.verification_carrying(entry.id).await? {
             self.store
                 .discard_attempt(attempt.id, "the pull request left the queue")
                 .await?;
@@ -249,6 +303,12 @@ impl Engine {
             self.store
                 .remember_title(entry.id, &looked.pull_request.title)
                 .await?;
+            if self
+                .caught_up_with_github(&tending, &entry, &looked)
+                .await?
+            {
+                continue;
+            }
             if assess(&looked.snapshot) == Readiness::Ready {
                 self.store.take_a_number(entry.id).await?;
             } else if entry.queued_at.is_some() {
@@ -264,35 +324,76 @@ impl Engine {
             .map(|entry| entry.id)
             .collect();
 
+        let live = match self.store.live_attempt_on(tending.queue.id).await? {
+            Some(attempt) => Some(self.catch_up_on(&tending, attempt).await?),
+            None => None,
+        };
+        let travelling = self.who_travels_together(&tending, &live, &ready).await?;
+        let Some(travelling) = travelling else {
+            return Ok(());
+        };
+        let aboard: Vec<Aboard> = travelling
+            .iter()
+            .filter_map(|id| seen.iter().find(|(seen_id, _)| seen_id == id))
+            .map(|(_, looked)| Aboard {
+                number: looked.snapshot.number,
+                head: looked.snapshot.head.clone(),
+            })
+            .collect();
+
         let mut anything_in_flight = false;
+        let mut riding = Vec::new();
+        let mut next = Next::Nothing;
         for entry in entries {
             let Some((_, looked)) = seen.iter().find(|(id, _)| *id == entry.id) else {
                 continue;
-            };
-            if self.caught_up_with_github(&tending, &entry, looked).await? {
-                continue;
-            }
-            let ahead = ready.iter().position(|id| *id == entry.id).unwrap_or(0);
-            let attempt = match self.store.live_attempt(entry.id).await? {
-                Some(attempt) => Some(self.catch_up_on(&tending, attempt).await?),
-                None => None,
             };
             let decision = decide(
                 &looked.snapshot,
                 &tending.rules,
                 &InQueue {
-                    ahead,
+                    ahead: ready.iter().position(|id| *id == entry.id).unwrap_or(0),
+                    aboard: &aboard,
                     paused: tending.queue.paused,
-                    verification: attempt.as_ref().map(|(_, seen)| seen),
+                    verification: live.as_ref().map(|(_, seen)| seen),
                 },
             );
             anything_in_flight |= matches!(
                 decision.status,
-                Status::Preparing | Status::Validating | Status::Merging
+                Status::Preparing { .. } | Status::Validating { .. } | Status::Merging
             );
-            let attempt = attempt.map(|(row, _)| row);
-            self.act_on(&tending, &entry, looked, attempt, decision)
+            let changed = self
+                .store
+                .record_status(
+                    entry.id,
+                    decision.status.headline(),
+                    &decision.status.to_string(),
+                )
                 .await?;
+            if !travelling.contains(&entry.id) {
+                self.say_where_it_stands(&tending, &entry, looked, &decision.status, changed)
+                    .await?;
+                continue;
+            }
+            if riding.is_empty() {
+                next = decision.next;
+            }
+            riding.push(Riding {
+                entry,
+                head: looked.snapshot.head.to_string(),
+                title: looked.pull_request.title.clone(),
+                status: decision.status,
+                changed,
+            });
+        }
+
+        if !riding.is_empty() {
+            let batch = TheBatch {
+                riding,
+                attempt: live.map(|(attempt, _)| attempt),
+                next,
+            };
+            self.act_on_the_batch(&tending, batch).await?;
         }
 
         if anything_in_flight {
@@ -304,6 +405,76 @@ impl Engine {
                 )
                 .await?;
         }
+        Ok(())
+    }
+
+    async fn who_travels_together(
+        &self,
+        tending: &Tending,
+        live: &Option<(Attempt, Verification)>,
+        ready: &[i64],
+    ) -> Result<Option<Vec<i64>>, EngineError> {
+        let Some((attempt, _)) = live else {
+            let how_many = how_many_to_verify(
+                &tending.rules,
+                usize::try_from(tending.queue.verify_at_once).unwrap_or(1),
+                ready.len(),
+            );
+            return Ok(Some(ready.iter().take(how_many).copied().collect()));
+        };
+        let still_here: Vec<i64> = self
+            .store
+            .everyone_aboard(attempt.id)
+            .await?
+            .into_iter()
+            .map(|member| member.entry_id)
+            .filter(|id| ready.contains(id))
+            .collect();
+        if still_here.is_empty() {
+            self.tidy_away(tending, attempt, "everyone it was verifying left the queue")
+                .await?;
+            self.store
+                .ask_for(super::TEND, &super::subject(tending.queue.id))
+                .await?;
+            return Ok(None);
+        }
+        Ok(Some(still_here))
+    }
+
+    async fn say_where_it_stands(
+        &self,
+        tending: &Tending,
+        entry: &Entry,
+        looked: &Seen,
+        status: &Status,
+        changed: bool,
+    ) -> Result<(), EngineError> {
+        if !changed {
+            return Ok(());
+        }
+        self.show(
+            tending.who,
+            &tending.name,
+            &WhatTheCheckIsAbout {
+                head: looked.snapshot.head.as_str(),
+                pull_request: entry.pull_request,
+                branch: &tending.queue.branch,
+            },
+            status,
+            None,
+        )
+        .await?;
+        if matches!(status, Status::Blocked(_)) {
+            self.github
+                .say_something(
+                    tending.who,
+                    &tending.name,
+                    entry.pull_request,
+                    &format!("**Merge Queue** — blocked. {status}"),
+                )
+                .await?;
+        }
+        self.announce(&tending.name);
         Ok(())
     }
 
@@ -335,7 +506,7 @@ impl Engine {
         let Some((status, detail)) = settled else {
             return Ok(false);
         };
-        if let Some(attempt) = self.store.live_attempt(entry.id).await? {
+        if let Some(attempt) = self.store.verification_carrying(entry.id).await? {
             self.tidy_away(tending, &attempt, &detail).await?;
         }
         self.store
@@ -428,6 +599,16 @@ impl Engine {
         tending: &Tending,
         attempt: Attempt,
     ) -> Result<(Attempt, Verification), EngineError> {
+        let aboard: Vec<Aboard> = self
+            .store
+            .everyone_aboard(attempt.id)
+            .await?
+            .into_iter()
+            .map(|member| Aboard {
+                number: u64::try_from(member.pull_request).unwrap_or_default(),
+                head: Sha::from(member.head),
+            })
+            .collect();
         let mut attempt = attempt;
         if attempt.conclusion == "pending"
             && let Some(candidate) = attempt.candidate_sha.clone()
@@ -466,10 +647,22 @@ impl Engine {
                     .await?;
                 attempt.conclusion = "timed_out".to_owned();
             }
+            if attempt.conclusion != "pending" {
+                self.store
+                    .verify_this_many_next_time(
+                        tending.queue.id,
+                        after_a_batch(
+                            aboard.len(),
+                            &tending.rules,
+                            attempt.conclusion == "success",
+                        ),
+                    )
+                    .await?;
+            }
         }
         let verification = Verification {
             base: Sha::from(attempt.base.clone()),
-            head: Sha::from(attempt.head.clone()),
+            aboard,
             candidate: Sha::from(attempt.candidate_sha.clone().unwrap_or_default()),
             conclusion: match attempt.conclusion.as_str() {
                 "success" => Conclusion::Success,
@@ -482,101 +675,84 @@ impl Engine {
         Ok((attempt, verification))
     }
 
-    async fn act_on(
+    async fn act_on_the_batch(
         &self,
         tending: &Tending,
-        entry: &Entry,
-        looked: &Seen,
-        attempt: Option<Attempt>,
-        decision: Decision,
+        batch: TheBatch,
     ) -> Result<(), EngineError> {
-        let Decision { status, next } = decision;
-        let head = looked.snapshot.head.as_str();
-        let changed = self
-            .store
-            .record_status(entry.id, status.headline(), &status.to_string())
-            .await?;
-
-        match next {
-            Next::Nothing if matches!(status, Status::Failed(_)) => {
-                self.give_up(tending, entry, head, attempt.as_ref(), &status)
-                    .await?;
-            }
+        match &batch.next {
             Next::Nothing => {
-                if changed {
-                    self.show(
-                        tending.who,
-                        &tending.name,
-                        &WhatTheCheckIsAbout {
-                            head,
-                            pull_request: entry.pull_request,
-                            branch: &tending.queue.branch,
-                        },
-                        &status,
-                        None,
-                    )
-                    .await?;
-                    if matches!(status, Status::Blocked(_)) {
-                        self.github
-                            .say_something(
-                                tending.who,
-                                &tending.name,
-                                entry.pull_request,
-                                &format!("**Merge Queue** — blocked. {status}"),
-                            )
+                for riding in &batch.riding {
+                    if matches!(riding.status, Status::Failed(_)) {
+                        self.give_up(tending, riding, batch.attempt.as_ref())
                             .await?;
+                    } else {
+                        self.tell_them_where_they_stand(tending, riding).await?;
                     }
                 }
             }
-            Next::BuildCandidate { onto, head: at } => {
-                if changed {
-                    self.show(
-                        tending.who,
-                        &tending.name,
-                        &WhatTheCheckIsAbout {
-                            head,
-                            pull_request: entry.pull_request,
-                            branch: &tending.queue.branch,
-                        },
-                        &status,
-                        None,
-                    )
-                    .await?;
+            Next::BuildCandidate { onto, aboard } => {
+                for riding in &batch.riding {
+                    self.tell_them_where_they_stand(tending, riding).await?;
                 }
-                self.build_a_candidate(tending, entry, looked, &onto, &at)
+                let onto = onto.clone();
+                let aboard = aboard.clone();
+                self.build_a_candidate(tending, &batch, &onto, &aboard)
                     .await?;
             }
             Next::DiscardVerification => {
-                if let Some(attempt) = attempt {
-                    self.tidy_away(tending, &attempt, "the base or the head moved")
-                        .await?;
+                if let Some(attempt) = &batch.attempt {
+                    let because = match attempt.conclusion.as_str() {
+                        "failure" | "timed_out" => {
+                            "the checks failed, so fewer will be verified together next time"
+                        }
+                        _ => "the base or a head moved",
+                    };
+                    self.tidy_away(tending, attempt, because).await?;
                 }
-                if changed {
-                    self.show(
-                        tending.who,
-                        &tending.name,
-                        &WhatTheCheckIsAbout {
-                            head,
-                            pull_request: entry.pull_request,
-                            branch: &tending.queue.branch,
-                        },
-                        &status,
-                        None,
-                    )
-                    .await?;
+                for riding in &batch.riding {
+                    self.tell_them_where_they_stand(tending, riding).await?;
                 }
                 self.store
                     .ask_for(super::TEND, &super::subject(tending.queue.id))
                     .await?;
             }
             Next::Merge { method } => {
-                self.merge_it(tending, entry, head, attempt.as_ref(), method)
-                    .await?;
+                self.merge_the_batch(tending, &batch, *method).await?;
             }
         }
 
-        if changed {
+        if batch.riding.iter().any(|riding| riding.changed) {
             self.announce(&tending.name);
+        }
+        Ok(())
+    }
+
+    async fn tell_them_where_they_stand(
+        &self,
+        tending: &Tending,
+        riding: &Riding,
+    ) -> Result<(), EngineError> {
+        if !riding.changed {
+            return Ok(());
+        }
+        self.show(
+            tending.who,
+            &tending.name,
+            &riding.check_is_about(&tending.queue.branch),
+            &riding.status,
+            None,
+        )
+        .await?;
+        if matches!(riding.status, Status::Blocked(_)) {
+            self.github
+                .say_something(
+                    tending.who,
+                    &tending.name,
+                    riding.entry.pull_request,
+                    &format!("**Merge Queue** — blocked. {}", riding.status),
+                )
+                .await?;
         }
         Ok(())
     }
@@ -584,94 +760,137 @@ impl Engine {
     async fn build_a_candidate(
         &self,
         tending: &Tending,
-        entry: &Entry,
-        looked: &Seen,
+        batch: &TheBatch,
         onto: &Sha,
-        head: &Sha,
+        aboard: &[Aboard],
     ) -> Result<(), EngineError> {
-        let branch = format!(
-            "merge-queue/candidate-{}-{}",
-            entry.pull_request,
-            head.as_str().chars().take(7).collect::<String>()
-        );
+        let branch = what_to_call_the_candidate(aboard, onto);
         self.github
             .make_branch(tending.who, &tending.name, &branch, onto.as_str())
             .await?;
 
-        let merged = self
-            .github
-            .merge_into_branch(
-                tending.who,
-                &tending.name,
-                &branch,
-                head.as_str(),
-                &format!(
-                    "Merge queue candidate for #{} onto {}",
-                    entry.pull_request, tending.queue.branch
-                ),
-            )
-            .await;
-        let merged = match merged {
-            Ok(merged) => merged,
-            Err(problem) if problem.is_conflict() => {
-                self.github
-                    .delete_branch(tending.who, &tending.name, &branch)
-                    .await?;
-                let status = Status::Failed(WhyFailed::ConflictWhilePreparing);
-                self.store
-                    .settle(entry.id, status.headline(), &status.to_string(), None)
-                    .await?;
-                self.show(
+        let mut carried = Vec::new();
+        let mut candidate = onto.as_str().to_owned();
+        for riding in &batch.riding {
+            match self
+                .github
+                .merge_into_branch(
                     tending.who,
                     &tending.name,
-                    &WhatTheCheckIsAbout {
-                        head: head.as_str(),
-                        pull_request: entry.pull_request,
-                        branch: &tending.queue.branch,
-                    },
-                    &status,
-                    None,
+                    &branch,
+                    &riding.head,
+                    &format!(
+                        "Merge queue candidate for #{} onto {}",
+                        riding.entry.pull_request, tending.queue.branch
+                    ),
                 )
-                .await?;
-                return Ok(());
+                .await
+            {
+                Ok(merged) => {
+                    if let Some(result) = merged {
+                        candidate = result.sha;
+                    }
+                    carried.push((riding.entry.id, riding.head.clone()));
+                }
+                Err(problem) if problem.is_conflict() => {
+                    self.let_go_of_what_no_longer_merges(tending, riding)
+                        .await?;
+                }
+                Err(problem) => return Err(problem.into()),
             }
-            Err(problem) => return Err(problem.into()),
-        };
-        let candidate = merged.map_or_else(|| onto.as_str().to_owned(), |result| result.sha);
+        }
+        if carried.is_empty() {
+            self.github
+                .delete_branch(tending.who, &tending.name, &branch)
+                .await?;
+            return Ok(());
+        }
 
         let attempt = self
             .store
-            .open_attempt(entry.id, onto.as_str(), head.as_str(), &branch)
+            .open_attempt(tending.queue.id, onto.as_str(), &branch, &carried)
             .await?;
+        let riding_on_it: Vec<&Riding> = batch
+            .riding
+            .iter()
+            .filter(|riding| carried.iter().any(|(id, _)| *id == riding.entry.id))
+            .collect();
         let draft = self
             .github
             .open_draft(
                 tending.who,
                 &tending.name,
-                &format!(
-                    "Merge queue: #{} {}",
-                    entry.pull_request, looked.pull_request.title
-                ),
+                &what_to_call_the_draft(&riding_on_it),
                 &branch,
                 &tending.queue.branch,
-                &format!(
-                    "Verifying #{} on top of `{}`. This pull request only exists to run the \
-                     repository's checks and is closed automatically.",
-                    entry.pull_request, tending.queue.branch
-                ),
+                &what_the_draft_explains(&riding_on_it, &tending.queue.branch),
             )
             .await?;
         self.store
             .attach_candidate(attempt.id, Some(draft.number), &candidate)
             .await?;
+        for riding in &riding_on_it {
+            self.store
+                .write_down(
+                    US,
+                    "verification started",
+                    Some(tending.repository.id),
+                    Some(riding.entry.pull_request),
+                    &format!("candidate {candidate} on {branch}"),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn let_go_of_what_no_longer_merges(
+        &self,
+        tending: &Tending,
+        riding: &Riding,
+    ) -> Result<(), EngineError> {
+        let status = Status::Failed(WhyFailed::ConflictWhilePreparing);
         self.store
-            .write_down(
-                US,
-                "verification started",
-                Some(tending.repository.id),
-                Some(entry.pull_request),
-                &format!("candidate {candidate} on {branch}"),
+            .settle(
+                riding.entry.id,
+                status.headline(),
+                &status.to_string(),
+                None,
             )
+            .await?;
+        self.show(
+            tending.who,
+            &tending.name,
+            &riding.check_is_about(&tending.queue.branch),
+            &status,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn merge_the_batch(
+        &self,
+        tending: &Tending,
+        batch: &TheBatch,
+        method: MergeMethod,
+    ) -> Result<(), EngineError> {
+        let mut refused = None;
+        for riding in &batch.riding {
+            if !self.merge_it(tending, riding, method).await? {
+                refused = Some(riding);
+                break;
+            }
+        }
+        if let Some(attempt) = &batch.attempt {
+            let because = if refused.is_some() {
+                "GitHub refused a merge"
+            } else {
+                "the pull requests merged"
+            };
+            self.tidy_away(tending, attempt, because).await?;
+        }
+        self.store
+            .ask_for(super::TEND, &super::subject(tending.queue.id))
             .await?;
         Ok(())
     }
@@ -679,19 +898,13 @@ impl Engine {
     async fn merge_it(
         &self,
         tending: &Tending,
-        entry: &Entry,
-        head: &str,
-        attempt: Option<&Attempt>,
+        riding: &Riding,
         method: MergeMethod,
-    ) -> Result<(), EngineError> {
+    ) -> Result<bool, EngineError> {
         self.show(
             tending.who,
             &tending.name,
-            &WhatTheCheckIsAbout {
-                head,
-                pull_request: entry.pull_request,
-                branch: &tending.queue.branch,
-            },
+            &riding.check_is_about(&tending.queue.branch),
             &Status::Merging,
             Some("success"),
         )
@@ -702,16 +915,16 @@ impl Engine {
             .merge_pull_request(
                 tending.who,
                 &tending.name,
-                entry.pull_request,
+                riding.entry.pull_request,
                 &method.to_string(),
-                head,
+                &riding.head,
             )
             .await
         {
             Ok(sha) => {
                 self.store
                     .settle(
-                        entry.id,
+                        riding.entry.id,
                         Status::MERGED,
                         &format!("merged as {sha}"),
                         Some(&sha),
@@ -722,44 +935,34 @@ impl Engine {
                         US,
                         "merged",
                         Some(tending.repository.id),
-                        Some(entry.pull_request),
+                        Some(riding.entry.pull_request),
                         &format!("{method} as {sha}"),
                     )
                     .await?;
-                if let Some(attempt) = attempt {
-                    self.tidy_away(tending, attempt, "the pull request merged")
-                        .await?;
-                }
                 self.github
                     .remove_label(
                         tending.who,
                         &tending.name,
-                        entry.pull_request,
+                        riding.entry.pull_request,
                         config::LABEL,
                     )
                     .await?;
                 self.store
                     .note_where_the_base_is(tending.queue.id, &sha)
                     .await?;
-                self.store
-                    .ask_for(super::TEND, &super::subject(tending.queue.id))
-                    .await?;
+                Ok(true)
             }
             Err(problem) => {
                 let status = Status::Failed(WhyFailed::MergeRejected {
                     message: problem.to_string(),
                 });
                 self.store
-                    .record_status(entry.id, status.headline(), &status.to_string())
+                    .record_status(riding.entry.id, status.headline(), &status.to_string())
                     .await?;
                 self.show(
                     tending.who,
                     &tending.name,
-                    &WhatTheCheckIsAbout {
-                        head,
-                        pull_request: entry.pull_request,
-                        branch: &tending.queue.branch,
-                    },
+                    &riding.check_is_about(&tending.queue.branch),
                     &status,
                     None,
                 )
@@ -768,36 +971,37 @@ impl Engine {
                     return Err(problem.into());
                 }
                 self.store
-                    .settle(entry.id, status.headline(), &status.to_string(), None)
+                    .settle(
+                        riding.entry.id,
+                        status.headline(),
+                        &status.to_string(),
+                        None,
+                    )
                     .await?;
-                if let Some(attempt) = attempt {
-                    self.tidy_away(tending, attempt, "GitHub refused the merge")
-                        .await?;
-                }
+                Ok(false)
             }
         }
-        Ok(())
     }
 
     async fn give_up(
         &self,
         tending: &Tending,
-        entry: &Entry,
-        head: &str,
+        riding: &Riding,
         attempt: Option<&Attempt>,
-        status: &Status,
     ) -> Result<(), EngineError> {
+        let status = &riding.status;
         self.store
-            .settle(entry.id, status.headline(), &status.to_string(), None)
+            .settle(
+                riding.entry.id,
+                status.headline(),
+                &status.to_string(),
+                None,
+            )
             .await?;
         self.show(
             tending.who,
             &tending.name,
-            &WhatTheCheckIsAbout {
-                head,
-                pull_request: entry.pull_request,
-                branch: &tending.queue.branch,
-            },
+            &riding.check_is_about(&tending.queue.branch),
             status,
             None,
         )
@@ -806,7 +1010,7 @@ impl Engine {
             .say_something(
                 tending.who,
                 &tending.name,
-                entry.pull_request,
+                riding.entry.pull_request,
                 &format!(
                     "**Merge Queue** — removed from the queue for `{}`. {status}\n\nFix it and \
                      add the `{}` label again.",
@@ -819,7 +1023,7 @@ impl Engine {
             .remove_label(
                 tending.who,
                 &tending.name,
-                entry.pull_request,
+                riding.entry.pull_request,
                 config::LABEL,
             )
             .await?;
@@ -832,7 +1036,7 @@ impl Engine {
                 US,
                 "left the queue",
                 Some(tending.repository.id),
-                Some(entry.pull_request),
+                Some(riding.entry.pull_request),
                 &status.to_string(),
             )
             .await?;

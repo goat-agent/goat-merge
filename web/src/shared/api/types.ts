@@ -28,7 +28,7 @@ const statuses = [
 
 export type Trial = {
   base: string;
-  head: string;
+  aboard: number[];
   candidate_branch: string;
   candidate_pull_request: number | null;
   candidate_sha: string | null;
@@ -39,7 +39,7 @@ export type Trial = {
 
 export const readsAsATrial: Read<Trial> = shape((given) => ({
   base: need(text, given.base),
-  head: need(text, given.head),
+  aboard: need(list(whole), given.aboard),
   candidate_branch: need(text, given.candidate_branch),
   candidate_pull_request: need(maybe(whole), given.candidate_pull_request),
   candidate_sha: need(maybe(text), given.candidate_sha),

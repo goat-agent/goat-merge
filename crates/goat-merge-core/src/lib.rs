@@ -5,7 +5,10 @@ pub mod snapshot;
 pub mod state;
 
 pub use config::{Config, ConfigError, Enqueue, MergeMethod, Queue, Retry};
-pub use plan::{Decision, InQueue, Next, Verification, already_verified, decide};
+pub use plan::{
+    Aboard, Decision, InQueue, Next, Verification, after_a_batch, already_verified, decide,
+    how_many_to_verify,
+};
 pub use readiness::{CHECK_NAME, Readiness, assess, required_checks};
 pub use snapshot::{Base, Check, Conclusion, Mergeable, Sha, Snapshot};
 pub use state::{NotQueued, Status, WhyBlocked, WhyFailed, WhyWaiting};

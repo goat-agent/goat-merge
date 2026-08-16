@@ -72,7 +72,22 @@ These are not style preferences. Breaking one lets a broken commit onto somebody
 - **The tree that lands is the tree a passing check verified.** This is the whole product.
   Every path to a merge either builds a candidate from the current base and waits for its
   checks, or proves the existing checks already tested this exact combination. There is no
-  third path.
+  third path. A candidate may carry several pull requests, in which case the verified tree is
+  the one that exists once they have all landed; the states in between are on the way there,
+  and nobody else can get in because our check is required and the tend holds the lock.
+- **A verification is evidence about exactly who rode it.** `verification_members` is that
+  list. If somebody joins, leaves, or pushes, the result is about a tree nobody is asking
+  about any more and it is discarded. `plan::decide` compares the whole list, not the first
+  one.
+- **A batch that fails accuses nobody.** Two pull requests that fail together are two
+  suspects. The queue halves how many it verifies at once and tries the smaller set; only a
+  pull request that fails *on its own* has been shown to be at fault and leaves. Settling
+  everyone on a shared red is how a merge queue earns a reputation for throwing out
+  innocent work.
+- **How many to verify at once is a queue's own business, not the config's.** `batch_size`
+  is a ceiling. `queues.verify_at_once` is where the queue actually is, and it starts at 1,
+  climbs by one on every pass and halves on every failure. A queue on a flaky repository
+  therefore shrinks itself without anybody editing a file.
 - **Re-read the base and head in the moment before merging.** A verification that was true a
   minute ago is not evidence about now. If `base` or `head` moved, discard the result and
   start over. Never merge on a stale verification to save a CI run.

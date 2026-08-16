@@ -10,6 +10,33 @@ fn the_smallest_useful_config_is_a_version_and_a_branch() {
     assert_eq!(queue.enqueue, Enqueue::Manual);
     assert_eq!(queue.merge_method, None);
     assert_eq!(queue.check_timeout, Duration::from_secs(45 * 60));
+    assert_eq!(queue.batch_size, 5);
+}
+
+#[test]
+fn a_queue_can_say_how_many_it_will_verify_together() {
+    let config = Config::parse("version: 1\nqueues:\n  - branch: main\n    batch_size: 1\n")
+        .expect("parses");
+
+    let queue = config.queue_for("main").expect("main should have a queue");
+    assert_eq!(
+        queue.most_it_will_verify_at_once(),
+        1,
+        "somebody who wants one at a time must be able to say so"
+    );
+}
+
+#[test]
+fn a_batch_size_of_zero_still_verifies_one() {
+    let config = Config::parse("version: 1\nqueues:\n  - branch: main\n    batch_size: 0\n")
+        .expect("parses");
+
+    let queue = config.queue_for("main").expect("main should have a queue");
+    assert_eq!(
+        queue.most_it_will_verify_at_once(),
+        1,
+        "a queue that verifies nothing at a time never merges anything"
+    );
 }
 
 #[test]

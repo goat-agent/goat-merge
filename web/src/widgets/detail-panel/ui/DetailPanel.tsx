@@ -201,7 +201,8 @@ function Attempt({ attempt, owner, name }: { attempt: Trial; owner: string; name
     <Well className="text-ui">
       <div className="flex items-center justify-between">
         <span className="font-mono text-mono text-ink-faint">
-          {attempt.head.slice(0, 7)} on {attempt.base.slice(0, 7)}
+          {attempt.aboard.map((number) => `#${number}`).join(", ")} on{" "}
+          {attempt.base.slice(0, 7)}
         </span>
         <span className={conclusions[attempt.conclusion] ?? "text-ink-faint"}>
           {attempt.conclusion}

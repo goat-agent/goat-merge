@@ -913,3 +913,305 @@ async fn a_pull_request_that_leaves_the_queue_does_not_leave_our_check_running()
          left the queue blocks even a merge by hand, for ever: {published:?}"
     );
 }
+
+async fn a_queue_of(world: Arc<World>, more: &[(i32, &str)], at_once: usize) -> Option<Standing> {
+    for (number, head) in more {
+        world.also_holding(*number, head);
+    }
+    let standing = a_repository_with(Arc::clone(&world)).await?;
+    for (number, _) in more {
+        standing
+            .engine
+            .store
+            .enter(
+                standing.queue_id,
+                *number,
+                "frank",
+                &format!("chore: something else ({number})"),
+            )
+            .await
+            .expect("another entry");
+    }
+    standing
+        .engine
+        .store
+        .verify_this_many_next_time(standing.queue_id, at_once)
+        .await
+        .expect("a batch size");
+    Some(standing)
+}
+
+fn stale(name: &str) -> support::fake_github::Check {
+    passing(name, "2000-01-01T00:00:00Z")
+}
+
+fn merged_numbers(world: &World) -> Vec<i32> {
+    let mut numbers: Vec<i32> = world
+        .merged_pull_requests()
+        .iter()
+        .map(|(number, _, _)| *number)
+        .collect();
+    numbers.sort_unstable();
+    numbers
+}
+
+#[tokio::test]
+async fn three_ready_pull_requests_are_verified_on_one_candidate() {
+    let world = World::holding_one_ready_pull_request();
+    for head in ["head-one", "head-two", "head-three"] {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    let Some(standing) = a_queue_of(
+        Arc::clone(&world),
+        &[(124, "head-two"), (125, "head-three")],
+        3,
+    )
+    .await
+    else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the first tend");
+
+    assert_eq!(
+        standing.world.candidate_branches().len(),
+        1,
+        "three pull requests that can be tested together cost one candidate, not three"
+    );
+    assert_eq!(standing.world.draft_pull_requests().len(), 1);
+
+    standing.world.checks_on(
+        "candidate-of-head-three",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the second tend");
+
+    assert_eq!(
+        merged_numbers(&standing.world),
+        vec![123, 124, 125],
+        "one passing candidate merges everything that was on it"
+    );
+}
+
+#[tokio::test]
+async fn a_queue_that_has_never_verified_anything_still_starts_with_one() {
+    let world = World::holding_one_ready_pull_request();
+    for head in ["head-one", "head-two", "head-three"] {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    let Some(standing) = a_queue_of(
+        Arc::clone(&world),
+        &[(124, "head-two"), (125, "head-three")],
+        1,
+    )
+    .await
+    else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend");
+
+    assert_eq!(
+        standing.world.candidate_branches(),
+        vec!["merge-queue/candidate-123-base-on".to_owned()],
+        "a queue proves itself one pull request at a time before it risks a batch"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_that_fails_takes_nobody_out_and_tries_again_with_fewer() {
+    let world = World::holding_one_ready_pull_request();
+    for head in ["head-one", "head-two"] {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    let Some(standing) = a_queue_of(Arc::clone(&world), &[(124, "head-two")], 2).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the first tend");
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![failing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the second tend");
+
+    for number in [123, 124] {
+        let entry = standing
+            .engine
+            .store
+            .entry(standing.queue_id, number)
+            .await
+            .expect("the entry")
+            .expect("an entry");
+        assert_eq!(
+            entry.settled_at, None,
+            "#{number} failed alongside somebody else, so nothing yet says it is the one at fault"
+        );
+    }
+    let queue = standing
+        .engine
+        .store
+        .queue_by_id(standing.queue_id)
+        .await
+        .expect("the queue")
+        .expect("a queue");
+    assert_eq!(
+        queue.verify_at_once, 1,
+        "a failure halves how many are verified together, which is what finds the culprit"
+    );
+}
+
+#[tokio::test]
+async fn narrowing_down_stops_at_the_one_that_actually_broke_it() {
+    let world = World::holding_one_ready_pull_request();
+    for head in ["head-one", "head-two"] {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    let Some(standing) = a_queue_of(Arc::clone(&world), &[(124, "head-two")], 2).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the first tend");
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![failing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the second tend");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the third tend, now one at a time");
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![failing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the fourth tend");
+
+    let alone = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 123)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    assert_eq!(
+        alone.status, "Failed",
+        "#123 failed on its own, so it is the one at fault"
+    );
+    let other = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 124)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    assert_eq!(
+        other.settled_at, None,
+        "#124 was never shown to be at fault and must stay in the queue"
+    );
+}
+
+#[tokio::test]
+async fn a_pull_request_that_stops_merging_leaves_the_batch_and_the_rest_carry_on() {
+    let world = World::holding_one_ready_pull_request();
+    for head in ["head-one", "head-two"] {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    world.nothing_merges_into("head-two");
+    let Some(standing) = a_queue_of(Arc::clone(&world), &[(124, "head-two")], 2).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the first tend");
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the second tend");
+
+    assert_eq!(
+        merged_numbers(&standing.world),
+        vec![123],
+        "one pull request going bad must not hold up the ones it was travelling with"
+    );
+    let gone = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 124)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    assert_eq!(gone.status, "Failed");
+}
+
+#[tokio::test]
+async fn somebody_riding_with_others_is_told_who_else_is_on_the_candidate() {
+    let world = World::holding_one_ready_pull_request();
+    for head in ["head-one", "head-two"] {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    let Some(standing) = a_queue_of(Arc::clone(&world), &[(124, "head-two")], 2).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the first tend");
+
+    let entry = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 124)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    assert!(
+        entry.status_detail.contains("#123"),
+        "somebody whose own checks are green needs to know whose work they are waiting on, and \
+         instead they were told {:?}",
+        entry.status_detail
+    );
+}

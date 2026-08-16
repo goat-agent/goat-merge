@@ -12,6 +12,7 @@ pub struct Queue {
     pub paused_by: Option<String>,
     pub base_sha: Option<String>,
     pub base_moved_at: OffsetDateTime,
+    pub verify_at_once: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -35,9 +36,8 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Attempt {
     pub id: i64,
-    pub entry_id: i64,
+    pub queue_id: i64,
     pub base: String,
-    pub head: String,
     pub candidate_branch: String,
     pub candidate_pull_request: Option<i32>,
     pub candidate_sha: Option<String>,
@@ -47,11 +47,19 @@ pub struct Attempt {
     pub finished_at: Option<OffsetDateTime>,
 }
 
-const QUEUE_COLUMNS: &str = "id, repository_id, branch, paused, paused_by, base_sha, base_moved_at";
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Member {
+    pub entry_id: i64,
+    pub pull_request: i32,
+    pub head: String,
+}
+
+const QUEUE_COLUMNS: &str = "id, repository_id, branch, paused, paused_by, base_sha, \
+                             base_moved_at, verify_at_once";
 const ENTRY_COLUMNS: &str = "id, queue_id, pull_request, title, requested_by, requested_at, \
                              queued_at, priority, expedited_by, expedite_note, status, \
                              status_detail, settled_at, merged_sha";
-const ATTEMPT_COLUMNS: &str = "id, entry_id, base, head, candidate_branch, candidate_pull_request, \
+const ATTEMPT_COLUMNS: &str = "id, queue_id, base, candidate_branch, candidate_pull_request, \
                                candidate_sha, conclusion, failed_checks, started_at, finished_at";
 const RUNNING_ORDER: &str = "order by priority desc, queued_at asc nulls last, requested_at asc";
 
@@ -305,29 +313,58 @@ impl Store {
 
     pub async fn open_attempt(
         &self,
-        entry_id: i64,
+        queue_id: i64,
         base: &str,
-        head: &str,
         candidate_branch: &str,
+        aboard: &[(i64, String)],
     ) -> Result<Attempt, StoreError> {
+        let mut writing = self.pool().begin().await?;
         let attempt = sqlx::query_as::<_, Attempt>(&format!(
-            "insert into verifications (entry_id, base, head, candidate_branch) \
-             values ($1, $2, $3, $4) returning {ATTEMPT_COLUMNS}"
+            "insert into verifications (queue_id, base, candidate_branch) \
+             values ($1, $2, $3) returning {ATTEMPT_COLUMNS}"
         ))
-        .bind(entry_id)
+        .bind(queue_id)
         .bind(base)
-        .bind(head)
         .bind(candidate_branch)
-        .fetch_one(self.pool())
+        .fetch_one(&mut *writing)
+        .await?;
+        for (place, (entry_id, head)) in aboard.iter().enumerate() {
+            sqlx::query(
+                "insert into verification_members (verification_id, entry_id, head, place) \
+                 values ($1, $2, $3, $4)",
+            )
+            .bind(attempt.id)
+            .bind(entry_id)
+            .bind(head)
+            .bind(i32::try_from(place).unwrap_or(i32::MAX))
+            .execute(&mut *writing)
+            .await?;
+        }
+        writing.commit().await?;
+        Ok(attempt)
+    }
+
+    pub async fn live_attempt_on(&self, queue_id: i64) -> Result<Option<Attempt>, StoreError> {
+        let attempt = sqlx::query_as::<_, Attempt>(&format!(
+            "select {ATTEMPT_COLUMNS} from verifications \
+             where queue_id = $1 and discarded_at is null \
+             order by started_at desc limit 1"
+        ))
+        .bind(queue_id)
+        .fetch_optional(self.pool())
         .await?;
         Ok(attempt)
     }
 
-    pub async fn live_attempt(&self, entry_id: i64) -> Result<Option<Attempt>, StoreError> {
+    pub async fn verification_carrying(
+        &self,
+        entry_id: i64,
+    ) -> Result<Option<Attempt>, StoreError> {
         let attempt = sqlx::query_as::<_, Attempt>(&format!(
-            "select {ATTEMPT_COLUMNS} from verifications \
-             where entry_id = $1 and discarded_at is null \
-             order by started_at desc limit 1"
+            "select v.{ATTEMPT_COLUMNS} from verifications v \
+             join verification_members m on m.verification_id = v.id \
+             where m.entry_id = $1 and v.discarded_at is null \
+             order by v.started_at desc limit 1"
         ))
         .bind(entry_id)
         .fetch_optional(self.pool())
@@ -335,15 +372,41 @@ impl Store {
         Ok(attempt)
     }
 
-    pub async fn attempts_of(&self, entry_id: i64) -> Result<Vec<Attempt>, StoreError> {
+    pub async fn everyone_aboard(&self, attempt_id: i64) -> Result<Vec<Member>, StoreError> {
+        let aboard = sqlx::query_as::<_, Member>(
+            "select m.entry_id, e.pull_request, m.head from verification_members m \
+             join entries e on e.id = m.entry_id \
+             where m.verification_id = $1 order by m.place",
+        )
+        .bind(attempt_id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(aboard)
+    }
+
+    pub async fn attempts_carrying(&self, entry_id: i64) -> Result<Vec<Attempt>, StoreError> {
         let attempts = sqlx::query_as::<_, Attempt>(&format!(
-            "select {ATTEMPT_COLUMNS} from verifications \
-             where entry_id = $1 order by started_at asc"
+            "select v.{ATTEMPT_COLUMNS} from verifications v \
+             join verification_members m on m.verification_id = v.id \
+             where m.entry_id = $1 order by v.started_at asc"
         ))
         .bind(entry_id)
         .fetch_all(self.pool())
         .await?;
         Ok(attempts)
+    }
+
+    pub async fn verify_this_many_next_time(
+        &self,
+        queue_id: i64,
+        how_many: usize,
+    ) -> Result<(), StoreError> {
+        sqlx::query("update queues set verify_at_once = $2 where id = $1")
+            .bind(queue_id)
+            .bind(i32::try_from(how_many).unwrap_or(i32::MAX))
+            .execute(self.pool())
+            .await?;
+        Ok(())
     }
 
     pub async fn attach_candidate(

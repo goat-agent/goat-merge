@@ -20,6 +20,13 @@ function stillWaiting(row: Row): boolean {
   return row.settled_at === null && !beingVerified.includes(row.status);
 }
 
+function behind(rows: Row[]): string | null {
+  const numbers = rows.map((row) => `#${row.pull_request}`);
+  if (numbers.length === 0) return null;
+  if (numbers.length === 1) return `behind ${numbers[0]}`;
+  return `behind ${numbers.slice(0, -1).join(", ")} and ${numbers.at(-1)}`;
+}
+
 function howItEnded(rows: Row[]): string {
   const merged = rows.filter((row) => row.status === "Merged").length;
   const turnedAway = rows.length - merged;
@@ -50,7 +57,7 @@ export function QueuePage() {
           {(shown) => {
             const flying = shown.entries.filter(inFlight);
             const waiting = shown.entries.filter(stillWaiting);
-            const head = flying.at(0);
+            const note = behind(flying);
             const recent = (landed.answer ?? []).slice(0, 5);
             return (
               <div className="min-h-0 flex-1 overflow-y-auto">
@@ -87,7 +94,7 @@ export function QueuePage() {
                 {waiting.length > 0 || flying.length > 0 ? (
                   <QueueBoard
                     label="Waiting"
-                    {...(head ? { note: `behind #${head.pull_request}` } : {})}
+                    {...(note ? { note } : {})}
                     rows={waiting}
                     chosen={chosen}
                     onChoose={choose}

@@ -26,6 +26,8 @@ pub struct Queue {
     pub merge_method: Option<MergeMethod>,
     #[serde(default = "half_an_hour_and_a_quarter", deserialize_with = "duration")]
     pub check_timeout: Duration,
+    #[serde(default = "five")]
+    pub batch_size: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -84,7 +86,12 @@ impl Queue {
             enqueue: Enqueue::Manual,
             merge_method: None,
             check_timeout: half_an_hour_and_a_quarter(),
+            batch_size: five(),
         }
+    }
+
+    pub fn most_it_will_verify_at_once(&self) -> usize {
+        self.batch_size.max(1)
     }
 }
 
@@ -110,6 +117,10 @@ pub enum ConfigError {
 
 fn half_an_hour_and_a_quarter() -> Duration {
     Duration::from_secs(45 * 60)
+}
+
+fn five() -> usize {
+    5
 }
 
 fn duration<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {

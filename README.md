@@ -28,6 +28,12 @@ land on, in order, and merges it for you.
 - **Merging is instant when nothing is in the way.** If no commit has landed on the base since
   the last required check started, that check already tested the tree that is about to land,
   so there is nothing left to run. On a quiet repository the queue costs you nothing.
+- **A busy queue does not make everybody wait their turn one at a time.** Several pull
+  requests go onto one candidate and one CI run decides all of them. If it passes they all
+  land; if it fails, fewer travel together next time until the one at fault is on its own and
+  leaves. Nobody is thrown out of the queue for somebody else's failure. The queue starts at
+  one and only takes on more as the repository proves it can, so a flaky day shrinks it back
+  by itself.
 - **You can see why something is waiting.** Every decision names its reason — in the pull
   request, on the web console, and from the CLI.
 - **Pull requests from forks are not quietly trusted.** Copying a stranger's commits onto a
@@ -116,7 +122,11 @@ version: 1
 queues:
   - branch: main
     merge_method: squash
+    batch_size: 5
 ```
+
+`batch_size` is the most pull requests to put on one candidate. It is a ceiling, not a target
+— the queue works up to it and back down on its own. Set it to `1` to verify one at a time.
 
 Everything it accepts is in [schema/merge-queue.schema.json](schema/merge-queue.schema.json).
 Point your editor at it for completion and inline errors.

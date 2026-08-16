@@ -173,7 +173,12 @@ async fn re_entering_clears_an_earlier_result_without_losing_the_attempts() {
         .await
         .expect("an entry");
     let attempt = store
-        .open_attempt(entry.id, "base-one", "head-one", "merge-queue/candidate-1")
+        .open_attempt(
+            queue.id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(entry.id, "head-one".to_owned())],
+        )
         .await
         .expect("an attempt");
     store
@@ -193,7 +198,7 @@ async fn re_entering_clears_an_earlier_result_without_losing_the_attempts() {
     assert_eq!(again.settled_at, None);
     assert_eq!(
         store
-            .attempts_of(entry.id)
+            .attempts_carrying(entry.id)
             .await
             .expect("the attempts")
             .len(),
@@ -216,12 +221,17 @@ async fn a_discarded_attempt_stops_being_the_live_one() {
         .expect("an entry");
 
     let stale = store
-        .open_attempt(entry.id, "base-one", "head-one", "merge-queue/candidate-1")
+        .open_attempt(
+            queue.id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(entry.id, "head-one".to_owned())],
+        )
         .await
         .expect("an attempt");
     assert_eq!(
         store
-            .live_attempt(entry.id)
+            .verification_carrying(entry.id)
             .await
             .expect("the live attempt")
             .map(|a| a.id),
@@ -234,12 +244,15 @@ async fn a_discarded_attempt_stops_being_the_live_one() {
         .expect("a discard");
 
     assert_eq!(
-        store.live_attempt(entry.id).await.expect("no live attempt"),
+        store
+            .verification_carrying(entry.id)
+            .await
+            .expect("no live attempt"),
         None
     );
     assert_eq!(
         store
-            .attempts_of(entry.id)
+            .attempts_carrying(entry.id)
             .await
             .expect("the attempts")
             .len(),

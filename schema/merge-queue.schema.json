@@ -38,6 +38,12 @@
             "pattern": "^[0-9]+[smh]$",
             "default": "45m",
             "description": "How long to wait for a candidate's checks before giving up, written as a number and s, m or h."
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 5,
+            "description": "The most pull requests to put on one candidate and verify together. The queue starts at one and works up to this as it passes, and halves back down when a batch fails until it finds the one at fault. Set it to 1 to verify one at a time."
           }
         }
       }

@@ -13,7 +13,7 @@ use super::auth::{Standing, must_be_at_least, what_this_person_may_do, whoever_i
 use super::{Answer, Fault, Named, Sent, Wanting};
 use crate::engine::Engine;
 use crate::github::As;
-use crate::store::queue::{Attempt, Entry, Queue};
+use crate::store::queue::{Attempt, Entry, Member, Queue};
 use crate::store::repositories::Repository;
 
 #[derive(Debug, Serialize)]
@@ -38,7 +38,7 @@ pub struct Row {
 #[derive(Debug, Serialize)]
 pub struct Trial {
     pub base: String,
-    pub head: String,
+    pub aboard: Vec<i32>,
     pub candidate_branch: String,
     pub candidate_pull_request: Option<i32>,
     pub candidate_sha: Option<String>,
@@ -48,11 +48,11 @@ pub struct Trial {
     pub started_at: OffsetDateTime,
 }
 
-impl From<Attempt> for Trial {
-    fn from(attempt: Attempt) -> Self {
+impl Trial {
+    fn of(attempt: Attempt, aboard: Vec<Member>) -> Self {
         Self {
             base: attempt.base,
-            head: attempt.head,
+            aboard: aboard.into_iter().map(|one| one.pull_request).collect(),
             candidate_branch: attempt.candidate_branch,
             candidate_pull_request: attempt.candidate_pull_request,
             candidate_sha: attempt.candidate_sha,
@@ -63,7 +63,15 @@ impl From<Attempt> for Trial {
     }
 }
 
-fn row(entry: Entry, attempt: Option<Attempt>) -> Row {
+async fn what_it_rode(engine: &Engine, entry_id: i64) -> Result<Option<Trial>, Fault> {
+    let Some(attempt) = engine.store.verification_carrying(entry_id).await? else {
+        return Ok(None);
+    };
+    let aboard = engine.store.everyone_aboard(attempt.id).await?;
+    Ok(Some(Trial::of(attempt, aboard)))
+}
+
+fn row(entry: Entry, attempt: Option<Trial>) -> Row {
     Row {
         pull_request: entry.pull_request,
         title: entry.title,
@@ -76,7 +84,7 @@ fn row(entry: Entry, attempt: Option<Attempt>) -> Row {
         expedited_by: entry.expedited_by,
         expedite_note: entry.expedite_note,
         merged_sha: entry.merged_sha,
-        attempt: attempt.map(Trial::from),
+        attempt,
     }
 }
 
@@ -210,7 +218,7 @@ pub async fn one_queue(
     let queue = found_queue(&engine, &repository, &branch).await?;
     let mut rows = Vec::new();
     for entry in engine.store.running(queue.id).await? {
-        let attempt = engine.store.live_attempt(entry.id).await?;
+        let attempt = what_it_rode(&engine, entry.id).await?;
         rows.push(row(entry, attempt));
     }
     Ok(Answer(json!({
@@ -321,15 +329,19 @@ pub async fn one_pull(
 ) -> Result<Response, Fault> {
     let repository = found_for_reading(&engine, &headers, &owner, &name).await?;
     let entry = find_entry(&engine, &repository, number).await?;
-    let attempts = engine.store.attempts_of(entry.id).await?;
+    let mut attempts = Vec::new();
+    for attempt in engine.store.attempts_carrying(entry.id).await? {
+        let aboard = engine.store.everyone_aboard(attempt.id).await?;
+        attempts.push(Trial::of(attempt, aboard));
+    }
     let notes = engine
         .store
         .what_happened_to(repository.id, Some(number), 100)
         .await?;
-    let live = engine.store.live_attempt(entry.id).await?;
+    let live = what_it_rode(&engine, entry.id).await?;
     Ok(Answer(json!({
         "entry": row(entry, live),
-        "attempts": attempts.into_iter().map(Trial::from).collect::<Vec<_>>(),
+        "attempts": attempts,
         "timeline": notes.into_iter().map(|note| json!({
             "at": note.at.to_string(),
             "actor": note.actor,

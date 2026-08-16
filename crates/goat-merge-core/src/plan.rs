@@ -4,9 +4,15 @@ use crate::snapshot::{Conclusion, Sha, Snapshot};
 use crate::state::{NotQueued, Status, WhyBlocked, WhyFailed, WhyWaiting};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aboard {
+    pub number: u64,
+    pub head: Sha,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verification {
     pub base: Sha,
-    pub head: Sha,
+    pub aboard: Vec<Aboard>,
     pub candidate: Sha,
     pub conclusion: Conclusion,
     pub ran_out_of_time: bool,
@@ -16,6 +22,7 @@ pub struct Verification {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InQueue<'a> {
     pub ahead: usize,
+    pub aboard: &'a [Aboard],
     pub paused: bool,
     pub verification: Option<&'a Verification>,
 }
@@ -23,7 +30,7 @@ pub struct InQueue<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Next {
     Nothing,
-    BuildCandidate { onto: Sha, head: Sha },
+    BuildCandidate { onto: Sha, aboard: Vec<Aboard> },
     DiscardVerification,
     Merge { method: MergeMethod },
 }
@@ -56,30 +63,32 @@ pub fn decide(snapshot: &Snapshot, queue: &Queue, entry: &InQueue<'_>) -> Decisi
         Err(why) => return settled(Status::Blocked(why)),
     };
 
-    if entry.ahead > 0 {
+    if !entry.aboard.iter().any(|one| one.head == snapshot.head) {
         return settled(Status::Queued { ahead: entry.ahead });
     }
+    let alongside = alongside(entry.aboard, snapshot.number);
+    let alone = entry.aboard.len() <= 1;
 
     let Some(verification) = entry.verification else {
-        return if already_verified(snapshot) {
+        return if alone && already_verified(snapshot) {
             Decision {
                 status: Status::Merging,
                 next: Next::Merge { method },
             }
         } else {
             Decision {
-                status: Status::Preparing,
+                status: Status::Preparing { alongside },
                 next: Next::BuildCandidate {
                     onto: snapshot.base.sha.clone(),
-                    head: snapshot.head.clone(),
+                    aboard: entry.aboard.to_vec(),
                 },
             }
         };
     };
 
-    if verification.base != snapshot.base.sha || verification.head != snapshot.head {
+    if verification.base != snapshot.base.sha || verification.aboard != entry.aboard {
         return Decision {
-            status: Status::Preparing,
+            status: Status::Preparing { alongside },
             next: Next::DiscardVerification,
         };
     }
@@ -89,13 +98,40 @@ pub fn decide(snapshot: &Snapshot, queue: &Queue, entry: &InQueue<'_>) -> Decisi
             status: Status::Merging,
             next: Next::Merge { method },
         },
+        Conclusion::Failure if !alone => Decision {
+            status: Status::Preparing {
+                alongside: Vec::new(),
+            },
+            next: Next::DiscardVerification,
+        },
         Conclusion::Failure if verification.ran_out_of_time => {
             settled(Status::Failed(WhyFailed::TimedOut))
         }
         Conclusion::Failure => settled(Status::Failed(WhyFailed::ChecksFailed {
             checks: verification.failed_checks.clone(),
         })),
-        Conclusion::Pending => settled(Status::Validating),
+        Conclusion::Pending => settled(Status::Validating { alongside }),
+    }
+}
+
+fn alongside(aboard: &[Aboard], mine: u64) -> Vec<u64> {
+    aboard
+        .iter()
+        .map(|one| one.number)
+        .filter(|number| *number != mine)
+        .collect()
+}
+
+pub fn how_many_to_verify(rules: &Queue, now: usize, ready: usize) -> usize {
+    now.clamp(1, rules.most_it_will_verify_at_once()).min(ready)
+}
+
+pub fn after_a_batch(size: usize, rules: &Queue, passed: bool) -> usize {
+    if passed {
+        size.saturating_add(1)
+            .min(rules.most_it_will_verify_at_once())
+    } else {
+        (size / 2).max(1)
     }
 }
 

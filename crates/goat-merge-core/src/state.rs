@@ -8,8 +8,8 @@ pub enum Status {
     Waiting(WhyWaiting),
     Blocked(WhyBlocked),
     Queued { ahead: usize },
-    Preparing,
-    Validating,
+    Preparing { alongside: Vec<u64> },
+    Validating { alongside: Vec<u64> },
     Merging,
     Merged,
     Failed(WhyFailed),
@@ -73,8 +73,8 @@ impl Status {
             Self::Waiting(_) => "Waiting",
             Self::Blocked(_) => "Blocked",
             Self::Queued { .. } => "Queued",
-            Self::Preparing => "Preparing",
-            Self::Validating => "Checking",
+            Self::Preparing { .. } => "Preparing",
+            Self::Validating { .. } => "Checking",
             Self::Merging => "Merging",
             Self::Merged => Self::MERGED,
             Self::Failed(_) => Self::FAILED,
@@ -92,8 +92,14 @@ impl fmt::Display for Status {
             Self::Queued { ahead: 0 } => write!(f, "next in line"),
             Self::Queued { ahead: 1 } => write!(f, "1 pull request ahead"),
             Self::Queued { ahead } => write!(f, "{ahead} pull requests ahead"),
-            Self::Preparing => write!(f, "building a candidate on the latest base"),
-            Self::Validating => write!(f, "checking the candidate"),
+            Self::Preparing { alongside } => write!(
+                f,
+                "building a candidate on the latest base{}",
+                also_carrying(alongside)
+            ),
+            Self::Validating { alongside } => {
+                write!(f, "checking the candidate{}", also_carrying(alongside))
+            }
             Self::Merging => write!(f, "checks passed, merging"),
             Self::Merged => write!(f, "merged"),
             Self::Failed(why) => write!(f, "{why}"),
@@ -177,6 +183,27 @@ impl fmt::Display for WhyFailed {
             Self::TimedOut => write!(f, "the checks did not finish in time"),
             Self::MergeRejected { message } => write!(f, "GitHub refused the merge: {message}"),
         }
+    }
+}
+
+fn also_carrying(alongside: &[u64]) -> String {
+    match alongside {
+        [] => String::new(),
+        many => format!(", which also carries {}", numbers_phrase(many)),
+    }
+}
+
+fn numbers_phrase(numbers: &[u64]) -> String {
+    match numbers {
+        [] => String::new(),
+        [one] => format!("#{one}"),
+        [rest @ .., last] => format!(
+            "{} and #{last}",
+            rest.iter()
+                .map(|number| format!("#{number}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
