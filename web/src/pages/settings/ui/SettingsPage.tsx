@@ -15,6 +15,7 @@ export function SettingsPage() {
   const [said, setSaid] = useState<string | null>(null);
   const [wrong, setWrong] = useState<Trouble | null>(null);
   const [method, setMethod] = useState("");
+  const [atOnce, setAtOnce] = useState(defaultBatchSize);
   const asked = useAsked(() => api.diagnose(owner, name), [owner, name], useLive() + useEvery(30));
 
   async function doing(work: () => Promise<string | null>) {
@@ -40,6 +41,7 @@ export function SettingsPage() {
       const done = await api.enable(owner, name, {
         branch,
         merge_method: method === "" ? null : method,
+        batch_size: atOnce,
         write_config: withConfig,
       });
       return done.config_pull_request
@@ -125,6 +127,24 @@ export function SettingsPage() {
                     onPick={(picked) => setMethod(picked === whateverIsAllowed ? "" : picked)}
                   />
                 </div>
+                <div className="flex items-center gap-3 text-ui">
+                  <span className="text-ink-faint">Verify at most</span>
+                  <Select
+                    label="Pull requests on one candidate"
+                    value={String(atOnce)}
+                    options={batchSizes.map((one) => ({
+                      value: String(one),
+                      label: one === 1 ? "1 pull request" : `${one} pull requests`,
+                    }))}
+                    onPick={(picked) => setAtOnce(Number(picked) || defaultBatchSize)}
+                  />
+                  <span className="text-ink-faint">on one candidate</span>
+                </div>
+                <p className="text-ui text-ink-faint">
+                  A ceiling, not a target. The queue starts at one and works up to it as the
+                  repository proves itself, and halves back down when a batch fails until it
+                  finds the pull request at fault.
+                </p>
                 <div className="flex flex-wrap gap-2">
                   <Button tone="primary" disabled={busy} onClick={() => enable(found.branch, true)}>
                     Enable and open a configuration pull request
@@ -173,6 +193,8 @@ export function SettingsPage() {
 }
 
 const whateverIsAllowed = "whatever the repository allows";
+const batchSizes = [1, 2, 3, 5, 8, 10];
+const defaultBatchSize = 5;
 
 function Line({ settled, says }: { settled: boolean; says: string }) {
   const Icon = settled ? CheckCircle2 : AlertTriangle;

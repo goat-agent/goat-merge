@@ -256,6 +256,7 @@ fn advice(protected: bool, enforced: bool, methods: usize, label: bool) -> Vec<V
 pub struct HowToEnable {
     branch: Option<String>,
     merge_method: Option<MergeMethod>,
+    batch_size: Option<usize>,
     write_config: Option<bool>,
 }
 
@@ -287,7 +288,15 @@ pub async fn enable(
 
     let mut opened = None;
     if how.write_config.unwrap_or(false) {
-        opened = self_serve_config(&engine, who, &full, &branch, how.merge_method).await?;
+        opened = self_serve_config(
+            &engine,
+            who,
+            &full,
+            &branch,
+            how.merge_method,
+            how.batch_size,
+        )
+        .await?;
     }
 
     engine
@@ -315,6 +324,7 @@ async fn self_serve_config(
     full: &str,
     branch: &str,
     method: Option<MergeMethod>,
+    batch_size: Option<usize>,
 ) -> Result<Option<i32>, Fault> {
     if already_says_so(engine, who, full, branch).await? {
         return Ok(None);
@@ -325,6 +335,9 @@ async fn self_serve_config(
     let mut written = format!("version: 1\n\nqueues:\n  - branch: {branch}\n");
     if let Some(method) = method {
         written.push_str(&format!("    merge_method: {method}\n"));
+    }
+    if let Some(most) = batch_size {
+        written.push_str(&format!("    batch_size: {most}\n"));
     }
     engine
         .github
