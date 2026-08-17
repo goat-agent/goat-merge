@@ -65,6 +65,7 @@ pub struct World {
     pub protection_is_down: Mutex<bool>,
     pub protection_flakes_first: Mutex<u32>,
     pub answers_after: Mutex<std::time::Duration>,
+    pub answering: Mutex<(usize, usize)>,
     next_draft: Mutex<i32>,
 }
 
@@ -123,6 +124,10 @@ impl World {
             .filter(|branch| branch.starts_with("merge-queue/candidate-"))
             .cloned()
             .collect()
+    }
+
+    pub fn most_it_was_ever_asked_at_once(&self) -> usize {
+        self.answering.lock().expect("answering").1
     }
 
     pub fn takes_this_long_to_answer(&self, each: std::time::Duration) {
@@ -236,11 +241,18 @@ async fn dawdle(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    {
+        let mut counting = world.answering.lock().expect("answering");
+        counting.0 += 1;
+        counting.1 = counting.1.max(counting.0);
+    }
     let wait = *world.answers_after.lock().expect("delay");
     if !wait.is_zero() {
         tokio::time::sleep(wait).await;
     }
-    next.run(request).await
+    let answer = next.run(request).await;
+    world.answering.lock().expect("answering").0 -= 1;
+    answer
 }
 
 pub async fn listening(world: Arc<World>) -> String {

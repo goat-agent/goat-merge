@@ -1457,24 +1457,21 @@ async fn a_deep_queue_is_read_from_github_a_few_at_a_time() {
         return;
     };
 
-    let each = std::time::Duration::from_millis(60);
-    standing.world.takes_this_long_to_answer(each);
-    let began = std::time::Instant::now();
+    standing
+        .world
+        .takes_this_long_to_answer(std::time::Duration::from_millis(60));
     standing
         .engine
         .tend(standing.queue_id)
         .await
         .expect("a tend");
-    let took = began.elapsed();
 
-    let entries = 30;
-    let calls_each = 4;
-    let one_after_another = each * entries * calls_each;
+    let at_once = standing.world.most_it_was_ever_asked_at_once();
     assert!(
-        took < one_after_another / 2,
-        "reading {entries} pull requests one after another, and telling each of them where it \
-         stands one after another, would take well over {one_after_another:?}; this tend took \
-         {took:?}, which is not the saving concurrency is supposed to buy"
+        at_once > 1,
+        "30 pull requests were read one after another, so a queue that deep waits for one round \
+         trip per pull request per look; GitHub was never asked more than {at_once} thing(s) at \
+         a time"
     );
 }
 
