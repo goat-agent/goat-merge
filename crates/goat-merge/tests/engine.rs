@@ -1547,3 +1547,53 @@ async fn a_labelled_pull_request_no_webhook_told_us_about_is_found_anyway() {
          learns from webhooks would never have touched it"
     );
 }
+
+#[tokio::test]
+async fn a_verification_that_never_got_a_candidate_does_not_hold_the_queue_forever() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![stale("test")]);
+    let Some(standing) = a_queue_of(Arc::clone(&world), &[(124, "head-two")], 1).await else {
+        return;
+    };
+    let entry = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 123)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    standing
+        .engine
+        .store
+        .open_attempt(
+            standing.queue_id,
+            "base-one",
+            "merge-queue/candidate-that-never-was",
+            &[(entry.id, "head-one".to_owned())],
+            None,
+        )
+        .await
+        .expect("a verification with no candidate, as a killed tend would leave");
+    sqlx::query("update verifications set started_at = now() - interval '10 minutes'")
+        .execute(standing.engine.store.pool())
+        .await
+        .expect("an old verification");
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend");
+
+    let live = standing
+        .engine
+        .store
+        .live_attempt_on(standing.queue_id)
+        .await
+        .expect("the live attempt");
+    assert!(
+        live.is_none_or(|attempt| attempt.candidate_sha.is_some()),
+        "a verification with no candidate can never be concluded by anything, so leaving it \
+         live blocks every pull request behind it for good"
+    );
+}

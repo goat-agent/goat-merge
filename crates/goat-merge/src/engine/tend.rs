@@ -32,6 +32,8 @@ struct Tending {
 
 const AT_A_TIME: usize = 4;
 
+const NEVER_GOT_GOING: Duration = Duration::minutes(5);
+
 struct Riding {
     entry: Entry,
     head: String,
@@ -725,6 +727,20 @@ impl Engine {
             })
             .collect();
         let mut attempt = attempt;
+        if attempt.conclusion == "pending" && attempt.candidate_sha.is_none() {
+            let stalled = OffsetDateTime::now_utc() - attempt.started_at > NEVER_GOT_GOING;
+            if stalled {
+                tracing::warn!(
+                    verification = attempt.id,
+                    "this verification never got a candidate, so nothing could ever conclude \
+                     it and everything behind it was waiting on a run that does not exist"
+                );
+                self.store
+                    .conclude_attempt(attempt.id, "timed_out", &[])
+                    .await?;
+                attempt.conclusion = "timed_out".to_owned();
+            }
+        }
         if attempt.conclusion == "pending"
             && let Some(candidate) = attempt.candidate_sha.clone()
         {
