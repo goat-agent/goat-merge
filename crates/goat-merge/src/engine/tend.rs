@@ -395,13 +395,15 @@ impl Engine {
                 continue;
             }
             let readiness = assess(&looked.snapshot);
+            let still_deciding = matches!(
+                &readiness,
+                Readiness::Waiting(why) if why.github_will_not_tell_us_when_this_changes()
+            );
+            github_is_still_deciding |= still_deciding;
             if readiness == Readiness::Ready {
                 self.store.take_a_number(entry.id).await?;
-            } else if entry.queued_at.is_some() {
+            } else if entry.queued_at.is_some() && !still_deciding {
                 self.store.give_up_the_number(entry.id).await?;
-            }
-            if let Readiness::Waiting(why) = &readiness {
-                github_is_still_deciding |= why.github_will_not_tell_us_when_this_changes();
             }
             seen.push((entry.id, looked));
         }

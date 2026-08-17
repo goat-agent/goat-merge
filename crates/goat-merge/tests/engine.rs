@@ -2071,3 +2071,85 @@ async fn a_queue_that_halved_its_way_down_to_one_builds_nothing_ahead_of_itself(
          run it makes ahead of itself there is thrown away"
     );
 }
+
+#[tokio::test]
+async fn a_pull_request_github_has_not_finished_judging_keeps_its_place_in_the_queue() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2000-01-01T00:00:00Z")]);
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend that gives it a number");
+    let queued = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 123)
+        .await
+        .expect("the entry")
+        .expect("an entry")
+        .queued_at;
+    assert!(queued.is_some(), "it should be in line before we start");
+
+    standing.world.has_not_worked_out_whether_it_merges(123);
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend while GitHub is still deciding");
+
+    let after = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 123)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    assert_eq!(
+        after.queued_at, queued,
+        "GitHub pausing to recompute whether a branch merges is not the pull request losing its \
+         turn, and taking its number away sends it to the back of the line"
+    );
+}
+
+#[tokio::test]
+async fn a_candidate_is_not_thrown_away_because_github_paused_to_recompute_mergeability() {
+    let world = two_ready_pull_requests();
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front candidate");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the one on top of it");
+    standing.world.has_not_worked_out_whether_it_merges(124);
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend while GitHub is still deciding about the one behind");
+
+    assert_eq!(
+        standing
+            .engine
+            .store
+            .live_attempts_on(standing.queue_id)
+            .await
+            .expect("the live attempts")
+            .len(),
+        2,
+        "throwing away a running candidate because GitHub took a second to answer spends a CI \
+         run for nothing"
+    );
+}
