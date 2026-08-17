@@ -353,3 +353,157 @@ async fn a_worker_that_died_holding_a_job_does_not_keep_it_forever() {
         "after a restart the work has to be picked up again"
     );
 }
+
+#[tokio::test]
+async fn a_job_asked_for_again_while_it_ran_runs_again() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+
+    store
+        .ask_for("sweep", "acme/api")
+        .await
+        .expect("somebody asks while it is running");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_some(),
+        "a request that arrived while the job ran must survive the job finishing"
+    );
+}
+
+#[tokio::test]
+async fn a_job_asked_for_later_while_it_ran_keeps_the_delay() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+
+    store
+        .ask_for_later("sweep", "acme/api", Duration::minutes(5))
+        .await
+        .expect("the job asks to be looked at again in a while");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_none(),
+        "a job that asked to run again later must not run again straight away"
+    );
+}
+
+#[tokio::test]
+async fn the_soonest_of_two_requests_made_while_it_ran_is_the_one_that_wins() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+
+    store
+        .ask_for_later("sweep", "acme/api", Duration::minutes(5))
+        .await
+        .expect("the job asks to be looked at again in a while");
+    store
+        .ask_for("sweep", "acme/api")
+        .await
+        .expect("a webhook arrives before that while is up");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_some(),
+        "news that arrived while the job ran must not wait behind the job's own longer wait"
+    );
+}
+
+#[tokio::test]
+async fn asking_twice_while_it_ran_only_runs_it_once_more() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+
+    store.ask_for("sweep", "acme/api").await.expect("once");
+    store.ask_for("sweep", "acme/api").await.expect("twice");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    let again = store
+        .claim_a_job("two")
+        .await
+        .expect("a claim")
+        .expect("the one job those two requests became");
+    store.job_is_done(again.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_none(),
+        "two requests for the same work are one job, not two"
+    );
+}
+
+#[tokio::test]
+async fn a_job_nobody_asked_for_again_is_cleared() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_none(),
+        "work nobody asked for again is finished with"
+    );
+}
+
+#[tokio::test]
+async fn a_job_asked_for_again_does_not_carry_the_last_run_s_attempts() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+    store
+        .ask_for("sweep", "acme/api")
+        .await
+        .expect("somebody asks while it is running");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    let again = store
+        .claim_a_job("two")
+        .await
+        .expect("a claim")
+        .expect("the work that was asked for again");
+
+    assert_eq!(
+        again.attempts, 1,
+        "how long a failure waits must depend on how often this work has failed, not on how \
+         busy the queue has been"
+    );
+}

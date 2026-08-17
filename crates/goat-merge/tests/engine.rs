@@ -2,13 +2,14 @@ mod support;
 
 use std::sync::Arc;
 
-use goat_merge::engine::Engine;
+use goat_merge::engine::{Engine, TEND, subject};
 use goat_merge::github::{AppAuth, Github};
 use goat_merge::settings::Settings;
 use support::fake_github::{
     INSTALLATION, NAME, OWNER, World, a_private_key, failing, listening, passing, running,
 };
 use support::{a_seal, a_store_sealed_with, an_id_of_its_own};
+use time::OffsetDateTime;
 
 struct Standing {
     engine: Engine,
@@ -1630,5 +1631,116 @@ async fn putting_the_label_back_on_gets_a_pull_request_in_again_without_a_webhoo
         vec![(123, "squash".to_owned(), "head-one".to_owned())],
         "every way out of the queue takes the label off, so a label that is on again is \
          somebody asking to go back in"
+    );
+}
+
+async fn the_worker_takes_a_turn(standing: &Standing) {
+    let store = &standing.engine.store;
+    let ours = subject(standing.queue_id);
+    store.ask_for(TEND, &ours).await.expect("a job");
+    let job = loop {
+        let job = store
+            .claim_a_job("test")
+            .await
+            .expect("a claim")
+            .expect("the tend we just asked for");
+        if job.subject == ours {
+            break job;
+        }
+        sqlx::query("delete from jobs where id = $1")
+            .bind(job.id)
+            .execute(store.pool())
+            .await
+            .expect("another test in this binary left this behind");
+    };
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend");
+    store.job_is_done(job.id).await.expect("it finished");
+}
+
+async fn when_it_is_to_be_looked_at_again(standing: &Standing) -> Option<OffsetDateTime> {
+    sqlx::query_scalar("select run_after from jobs where kind = $1 and subject = $2")
+        .bind(TEND)
+        .bind(subject(standing.queue_id))
+        .fetch_optional(standing.engine.store.pool())
+        .await
+        .expect("the jobs table should be readable")
+}
+
+#[tokio::test]
+async fn a_merge_leaves_a_request_to_look_again_behind_it() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2099-01-01T00:00:00Z")]);
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+    let _alone = support::alone_with_the_jobs(&standing.engine.store).await;
+
+    the_worker_takes_a_turn(&standing).await;
+
+    assert!(
+        !standing.world.merged_pull_requests().is_empty(),
+        "this tend should have merged something"
+    );
+    let again = when_it_is_to_be_looked_at_again(&standing)
+        .await
+        .expect("a merge moves the base, so the queue has to be looked at again");
+    assert!(
+        again <= OffsetDateTime::now_utc(),
+        "the base has moved already, so there is nothing to wait for"
+    );
+}
+
+#[tokio::test]
+async fn a_candidate_still_running_asks_the_queue_to_look_again_in_a_while() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2000-01-01T00:00:00Z")]);
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+    let _alone = support::alone_with_the_jobs(&standing.engine.store).await;
+
+    the_worker_takes_a_turn(&standing).await;
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![running("test", "2099-01-01T00:00:00Z")],
+    );
+    the_worker_takes_a_turn(&standing).await;
+
+    let again = when_it_is_to_be_looked_at_again(&standing)
+        .await
+        .expect("a candidate that is still running has to be looked at again");
+    assert!(
+        again > OffsetDateTime::now_utc(),
+        "nothing has happened yet, so looking again immediately would only spin"
+    );
+}
+
+#[tokio::test]
+async fn a_discarded_verification_leaves_a_request_to_start_again() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2000-01-01T00:00:00Z")]);
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+    let _alone = support::alone_with_the_jobs(&standing.engine.store).await;
+
+    the_worker_takes_a_turn(&standing).await;
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing.world.move_the_base_to("base-two");
+    the_worker_takes_a_turn(&standing).await;
+
+    let again = when_it_is_to_be_looked_at_again(&standing)
+        .await
+        .expect("the result was thrown away, so the candidate has to be built again");
+    assert!(
+        again <= OffsetDateTime::now_utc(),
+        "there is nothing left running, so nothing to wait for"
     );
 }
