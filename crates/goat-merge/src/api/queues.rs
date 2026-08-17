@@ -37,8 +37,10 @@ pub struct Row {
 
 #[derive(Debug, Serialize)]
 pub struct Trial {
+    pub id: i64,
     pub base: String,
     pub aboard: Vec<i32>,
+    pub narrowed_from: Option<i64>,
     pub discarded_because: Option<String>,
     pub candidate_branch: String,
     pub candidate_pull_request: Option<i32>,
@@ -47,13 +49,17 @@ pub struct Trial {
     pub failed_checks: Vec<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub finished_at: Option<OffsetDateTime>,
 }
 
 impl Trial {
     fn of(attempt: Attempt, aboard: Vec<Member>) -> Self {
         Self {
+            id: attempt.id,
             base: attempt.base,
             aboard: aboard.into_iter().map(|one| one.pull_request).collect(),
+            narrowed_from: attempt.narrowed_from,
             discarded_because: attempt.discarded_because,
             candidate_branch: attempt.candidate_branch,
             candidate_pull_request: attempt.candidate_pull_request,
@@ -61,6 +67,7 @@ impl Trial {
             conclusion: attempt.conclusion,
             failed_checks: attempt.failed_checks,
             started_at: attempt.started_at,
+            finished_at: attempt.finished_at,
         }
     }
 }
@@ -71,6 +78,29 @@ async fn what_it_rode(engine: &Engine, entry_id: i64) -> Result<Option<Trial>, F
     };
     let aboard = engine.store.everyone_aboard(attempt.id).await?;
     Ok(Some(Trial::of(attempt, aboard)))
+}
+
+async fn what_they_rode(engine: &Engine, entries: Vec<Entry>) -> Result<Vec<Row>, Fault> {
+    let ids: Vec<i64> = entries.iter().map(|entry| entry.id).collect();
+    let rode = engine.store.what_each_of_them_last_rode(&ids).await?;
+    let mut aboard = std::collections::HashMap::new();
+    for one in &rode {
+        if let std::collections::hash_map::Entry::Vacant(empty) = aboard.entry(one.attempt.id) {
+            empty.insert(engine.store.everyone_aboard(one.attempt.id).await?);
+        }
+    }
+    let mut riders = std::collections::HashMap::new();
+    for one in rode {
+        let riding = aboard.get(&one.attempt.id).cloned().unwrap_or_default();
+        riders.insert(one.entry_id, Trial::of(one.attempt, riding));
+    }
+    Ok(entries
+        .into_iter()
+        .map(|entry| {
+            let rode = riders.remove(&entry.id);
+            row(entry, rode)
+        })
+        .collect())
 }
 
 fn row(entry: Entry, attempt: Option<Trial>) -> Row {
@@ -232,6 +262,7 @@ pub async fn one_queue(
         "paused_by": queue.paused_by,
         "base_sha": queue.base_sha,
         "verify_at_once": queue.verify_at_once,
+        "verify_at_once_because": queue.verify_at_once_because,
         "entries": rows,
     }))
     .into_response())
@@ -254,7 +285,7 @@ pub async fn history(
         .store
         .history(queue.id, how_many.limit.unwrap_or(100).clamp(1, 500))
         .await?;
-    let rows: Vec<Row> = entries.into_iter().map(|entry| row(entry, None)).collect();
+    let rows = what_they_rode(&engine, entries).await?;
     Ok(Answer(rows).into_response())
 }
 

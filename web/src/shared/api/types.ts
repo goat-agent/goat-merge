@@ -27,8 +27,10 @@ const statuses = [
 ] as const satisfies readonly Status[];
 
 export type Trial = {
+  id: number;
   base: string;
   aboard: number[];
+  narrowed_from: number | null;
   discarded_because: string | null;
   candidate_branch: string;
   candidate_pull_request: number | null;
@@ -36,11 +38,14 @@ export type Trial = {
   conclusion: string;
   failed_checks: string[];
   started_at: string;
+  finished_at: string | null;
 };
 
 export const readsAsATrial: Read<Trial> = shape((given) => ({
+  id: need(whole, given.id),
   base: need(text, given.base),
   aboard: need(list(whole), given.aboard),
+  narrowed_from: need(maybe(whole), given.narrowed_from),
   discarded_because: need(maybe(text), given.discarded_because),
   candidate_branch: need(text, given.candidate_branch),
   candidate_pull_request: need(maybe(whole), given.candidate_pull_request),
@@ -48,6 +53,7 @@ export const readsAsATrial: Read<Trial> = shape((given) => ({
   conclusion: need(text, given.conclusion),
   failed_checks: need(list(text), given.failed_checks),
   started_at: need(text, given.started_at),
+  finished_at: need(maybe(text), given.finished_at),
 }));
 
 export type Row = {
@@ -88,6 +94,7 @@ export type QueueView = {
   paused_by: string | null;
   base_sha: string | null;
   verify_at_once: number;
+  verify_at_once_because: string | null;
   entries: Row[];
 };
 
@@ -99,6 +106,7 @@ export const readsAsAQueue: Read<QueueView> = shape((given) => ({
   paused_by: need(maybe(text), given.paused_by),
   base_sha: need(maybe(text), given.base_sha),
   verify_at_once: need(whole, given.verify_at_once),
+  verify_at_once_because: need(maybe(text), given.verify_at_once_because),
   entries: need(list(readsAsARow), given.entries),
 }));
 
