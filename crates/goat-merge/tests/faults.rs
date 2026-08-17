@@ -43,6 +43,7 @@ fn github_answering_something_we_cannot_read() -> Fault {
 
 fn github_answering_html() -> Fault {
     GithubError::Refused {
+        asking: "/repos/acme/api/pulls/1".to_owned(),
         status: StatusCode::BAD_GATEWAY,
         said: None,
         body: "<html><head><title>502 Bad Gateway</title></head></html>".to_owned(),
@@ -100,6 +101,7 @@ async fn no_fault_carries_text_this_server_did_not_write() {
 async fn what_github_said_reaches_the_person_who_asked() {
     let (status, body) = answered(
         GithubError::Refused {
+            asking: "/repos/acme/api/pulls/1".to_owned(),
             status: StatusCode::UNPROCESSABLE_ENTITY,
             said: Some("No commits between main and merge-queue/setup".to_owned()),
             body: r#"{"message":"Validation Failed"}"#.to_owned(),
