@@ -60,6 +60,29 @@ fn what_to_call_the_candidate(aboard: &[Aboard], onto: &Sha) -> String {
     format!("merge-queue/candidate-{first}-{sha7}")
 }
 
+fn why_it_moved(now: usize, next: usize, aboard: &[Aboard], passed: bool) -> String {
+    let size = aboard.len();
+    let what_ran = if size == 1 {
+        format!("#{}", aboard.first().map_or(0, |one| one.number))
+    } else {
+        let numbers: Vec<String> = aboard
+            .iter()
+            .map(|one| format!("#{}", one.number))
+            .collect();
+        match numbers.split_last() {
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => "nothing".to_owned(),
+        }
+    };
+    let how = if size == 1 { "on its own" } else { "together" };
+    match (passed, next == now) {
+        (true, true) => format!("{what_ran} passed {how}"),
+        (true, false) => format!("{what_ran} passed {how}, so the queue is trying one more"),
+        (false, true) => format!("{what_ran} failed {how}, and there is nowhere smaller to go"),
+        (false, false) => format!("{what_ran} failed {how}, so the queue is trying fewer"),
+    }
+}
+
 fn what_to_call_the_draft(riding: &[&Riding]) -> String {
     match riding {
         [one] => format!("Merge queue: #{} {}", one.entry.pull_request, one.title),
@@ -645,15 +668,14 @@ impl Engine {
                 attempt.conclusion = "timed_out".to_owned();
             }
             if attempt.conclusion != "pending" {
+                let passed = attempt.conclusion == "success";
+                let now = usize::try_from(tending.queue.verify_at_once).unwrap_or(1);
+                let next = after_a_batch(now, aboard.len(), &tending.rules, passed);
                 self.store
                     .verify_this_many_next_time(
                         tending.queue.id,
-                        after_a_batch(
-                            usize::try_from(tending.queue.verify_at_once).unwrap_or(1),
-                            aboard.len(),
-                            &tending.rules,
-                            attempt.conclusion == "success",
-                        ),
+                        next,
+                        &why_it_moved(now, next, &aboard, passed),
                     )
                     .await?;
             }
@@ -844,9 +866,16 @@ impl Engine {
             return Ok(());
         }
 
+        let narrowed_from = self.what_this_narrows(tending, carried.len()).await?;
         let attempt = self
             .store
-            .open_attempt(tending.queue.id, onto.as_str(), &branch, &carried)
+            .open_attempt(
+                tending.queue.id,
+                onto.as_str(),
+                &branch,
+                &carried,
+                narrowed_from,
+            )
             .await?;
         let riding_on_it: Vec<&Riding> = batch
             .riding
@@ -879,6 +908,25 @@ impl Engine {
                 .await?;
         }
         Ok(())
+    }
+
+    async fn what_this_narrows(
+        &self,
+        tending: &Tending,
+        size: usize,
+    ) -> Result<Option<i64>, EngineError> {
+        let Some(before) = self
+            .store
+            .the_last_verification_on(tending.queue.id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if !matches!(before.conclusion.as_str(), "failure" | "timed_out") {
+            return Ok(None);
+        }
+        let was = self.store.everyone_aboard(before.id).await?.len();
+        Ok((size < was).then_some(before.id))
     }
 
     async fn let_go_of_what_no_longer_merges(
@@ -964,7 +1012,7 @@ impl Engine {
                     .settle(
                         riding.entry.id,
                         Status::MERGED,
-                        &format!("merged as {sha}"),
+                        &format!("merged as {}", sha.chars().take(7).collect::<String>()),
                         Some(&sha),
                     )
                     .await?;

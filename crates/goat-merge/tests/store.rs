@@ -178,6 +178,7 @@ async fn re_entering_clears_an_earlier_result_without_losing_the_attempts() {
             "base-one",
             "merge-queue/candidate-1",
             &[(entry.id, "head-one".to_owned())],
+            None,
         )
         .await
         .expect("an attempt");
@@ -226,6 +227,7 @@ async fn a_discarded_attempt_stops_being_the_live_one() {
             "base-one",
             "merge-queue/candidate-1",
             &[(entry.id, "head-one".to_owned())],
+            None,
         )
         .await
         .expect("an attempt");

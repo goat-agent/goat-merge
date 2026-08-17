@@ -13,6 +13,7 @@ pub struct Queue {
     pub base_sha: Option<String>,
     pub base_moved_at: OffsetDateTime,
     pub verify_at_once: i32,
+    pub verify_at_once_because: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -46,6 +47,14 @@ pub struct Attempt {
     pub started_at: OffsetDateTime,
     pub finished_at: Option<OffsetDateTime>,
     pub discarded_because: Option<String>,
+    pub narrowed_from: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct WhatItRode {
+    pub entry_id: i64,
+    #[sqlx(flatten)]
+    pub attempt: Attempt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -56,13 +65,13 @@ pub struct Member {
 }
 
 const QUEUE_COLUMNS: &str = "id, repository_id, branch, paused, paused_by, base_sha, \
-                             base_moved_at, verify_at_once";
+                             base_moved_at, verify_at_once, verify_at_once_because";
 const ENTRY_COLUMNS: &str = "id, queue_id, pull_request, title, requested_by, requested_at, \
                              queued_at, priority, expedited_by, expedite_note, status, \
                              status_detail, settled_at, merged_sha";
 const ATTEMPT_COLUMNS: &str = "id, queue_id, base, candidate_branch, candidate_pull_request, \
                                candidate_sha, conclusion, failed_checks, started_at, finished_at, \
-                               discarded_because";
+                               discarded_because, narrowed_from";
 const RUNNING_ORDER: &str = "order by priority desc, queued_at asc nulls last, requested_at asc";
 
 impl Store {
@@ -319,15 +328,17 @@ impl Store {
         base: &str,
         candidate_branch: &str,
         aboard: &[(i64, String)],
+        narrowed_from: Option<i64>,
     ) -> Result<Attempt, StoreError> {
         let mut writing = self.pool().begin().await?;
         let attempt = sqlx::query_as::<_, Attempt>(&format!(
-            "insert into verifications (queue_id, base, candidate_branch) \
-             values ($1, $2, $3) returning {ATTEMPT_COLUMNS}"
+            "insert into verifications (queue_id, base, candidate_branch, narrowed_from) \
+             values ($1, $2, $3, $4) returning {ATTEMPT_COLUMNS}"
         ))
         .bind(queue_id)
         .bind(base)
         .bind(candidate_branch)
+        .bind(narrowed_from)
         .fetch_one(&mut *writing)
         .await?;
         for (place, (entry_id, head)) in aboard.iter().enumerate() {
@@ -351,6 +362,20 @@ impl Store {
             "select {ATTEMPT_COLUMNS} from verifications \
              where queue_id = $1 and discarded_at is null \
              order by started_at desc limit 1"
+        ))
+        .bind(queue_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(attempt)
+    }
+
+    pub async fn the_last_verification_on(
+        &self,
+        queue_id: i64,
+    ) -> Result<Option<Attempt>, StoreError> {
+        let attempt = sqlx::query_as::<_, Attempt>(&format!(
+            "select {ATTEMPT_COLUMNS} from verifications \
+             where queue_id = $1 order by started_at desc limit 1"
         ))
         .bind(queue_id)
         .fetch_optional(self.pool())
@@ -386,6 +411,26 @@ impl Store {
         Ok(aboard)
     }
 
+    pub async fn what_each_of_them_last_rode(
+        &self,
+        entry_ids: &[i64],
+    ) -> Result<Vec<WhatItRode>, StoreError> {
+        if entry_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rode = sqlx::query_as::<_, WhatItRode>(&format!(
+            "select distinct on (m.entry_id) m.entry_id, v.{ATTEMPT_COLUMNS} \
+             from verification_members m \
+             join verifications v on v.id = m.verification_id \
+             where m.entry_id = any($1) \
+             order by m.entry_id, v.started_at desc"
+        ))
+        .bind(entry_ids)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rode)
+    }
+
     pub async fn attempts_carrying(&self, entry_id: i64) -> Result<Vec<Attempt>, StoreError> {
         let attempts = sqlx::query_as::<_, Attempt>(&format!(
             "select v.{ATTEMPT_COLUMNS} from verifications v \
@@ -402,12 +447,16 @@ impl Store {
         &self,
         queue_id: i64,
         how_many: usize,
+        because: &str,
     ) -> Result<(), StoreError> {
-        sqlx::query("update queues set verify_at_once = $2 where id = $1")
-            .bind(queue_id)
-            .bind(i32::try_from(how_many).unwrap_or(i32::MAX))
-            .execute(self.pool())
-            .await?;
+        sqlx::query(
+            "update queues set verify_at_once = $2, verify_at_once_because = $3 where id = $1",
+        )
+        .bind(queue_id)
+        .bind(i32::try_from(how_many).unwrap_or(i32::MAX))
+        .bind(because)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 

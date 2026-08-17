@@ -935,7 +935,7 @@ async fn a_queue_of(world: Arc<World>, more: &[(i32, &str)], at_once: usize) -> 
     standing
         .engine
         .store
-        .verify_this_many_next_time(standing.queue_id, at_once)
+        .verify_this_many_next_time(standing.queue_id, at_once, "the test asked for it")
         .await
         .expect("a batch size");
     Some(standing)
