@@ -437,6 +437,19 @@ impl Github {
         .await
     }
 
+    pub async fn open_pulls_onto(
+        &self,
+        who: As,
+        repository: &str,
+        branch: &str,
+    ) -> Result<Vec<PullRequest>, GithubError> {
+        self.get(
+            who,
+            &format!("/repos/{repository}/pulls?state=open&base={branch}&per_page=100"),
+        )
+        .await
+    }
+
     pub async fn label_exists(
         &self,
         who: As,

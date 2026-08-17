@@ -1498,3 +1498,52 @@ async fn a_github_five_hundred_that_clears_on_a_second_ask_does_not_stop_the_que
         "the queue should have carried on once github answered"
     );
 }
+
+#[tokio::test]
+async fn a_labelled_pull_request_no_webhook_told_us_about_is_found_anyway() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2099-01-01T00:00:00Z")]);
+    let Some(key) = a_private_key() else { return };
+    let store = match a_store_sealed_with(a_seal()).await {
+        Some(store) => store,
+        None => return,
+    };
+    let api = listening(Arc::clone(&world)).await;
+    let github = Github::new(&api).expect("a client");
+    github.adopt(AppAuth::holding(1, key).expect("a usable key"));
+    let settings = Settings {
+        public_url: "https://merge.example.com".to_owned(),
+        listen: "127.0.0.1:0".parse().expect("an address"),
+        database_url: String::new(),
+        master_key: [0; 32],
+        github_api: api,
+        github_web: "https://github.com".to_owned(),
+    };
+    let id = an_id_of_its_own();
+    store
+        .remember_installation(INSTALLATION, OWNER)
+        .await
+        .expect("an installation");
+    let repository = store
+        .remember_repository(id, INSTALLATION, OWNER, &format!("{NAME}-{id}"))
+        .await
+        .expect("a repository");
+    store
+        .set_repository_active(repository.id, true)
+        .await
+        .expect("an active repository");
+    let queue = store
+        .queue_for(repository.id, "main")
+        .await
+        .expect("a queue");
+    let engine = Engine::new(store, github, Arc::new(settings));
+
+    engine.tend(queue.id).await.expect("a tend");
+
+    assert_eq!(
+        world.merged_pull_requests(),
+        vec![(123, "squash".to_owned(), "head-one".to_owned())],
+        "the label was on the pull request and no webhook ever arrived, so a queue that only \
+         learns from webhooks would never have touched it"
+    );
+}

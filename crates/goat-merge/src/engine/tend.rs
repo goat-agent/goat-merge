@@ -322,6 +322,8 @@ impl Engine {
             queue,
         };
 
+        self.let_in_anybody_the_webhooks_missed(&tending).await?;
+
         let running = self.store.running(tending.queue.id).await?;
         let looked_at = self
             .look_at_all_of_them(&tending, &running, &settings, &protection)
@@ -438,6 +440,37 @@ impl Engine {
                     &super::subject(tending.queue.id),
                     LOOK_AGAIN_IN,
                 )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn let_in_anybody_the_webhooks_missed(
+        &self,
+        tending: &Tending,
+    ) -> Result<(), EngineError> {
+        if tending.rules.enqueue == Enqueue::Automatic {
+            return Ok(());
+        }
+        let open = self
+            .github
+            .open_pulls_onto(tending.who, &tending.name, &tending.queue.branch)
+            .await?;
+        for pull in open.iter().filter(|pull| pull.carries(config::LABEL)) {
+            if self
+                .store
+                .entry(tending.queue.id, pull.number)
+                .await?
+                .is_some_and(|entry| entry.settled_at.is_none())
+            {
+                continue;
+            }
+            tracing::info!(
+                pull_request = pull.number,
+                "no webhook ever told us this was labelled, so the queue found it itself"
+            );
+            self.store
+                .enter(tending.queue.id, pull.number, US, &pull.title)
                 .await?;
         }
         Ok(())
