@@ -28,7 +28,7 @@ asks what time it is.
 
 ## Rules
 
-The safety rules in the root `AGENTS.md` are mostly claims about this crate. Two live nowhere
+The safety rules in the root `AGENTS.md` are mostly claims about this crate. Three live nowhere
 else:
 
 - **The fast path compares against the last push to the base, not against "recently".** A
@@ -36,6 +36,9 @@ else:
   carries when the base last moved for exactly this comparison.
 - **A plan never merges and verifies in the same step.** Verification produces a recorded
   result; merging consumes one. Collapsing them is how a stale verification gets used.
+- **A plan is about one candidate.** When several are in flight, the one that merges is the only
+  one that acts in that pass; the others are looked at again against a base that has actually
+  moved.
 
 ## Testing
 

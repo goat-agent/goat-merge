@@ -123,10 +123,18 @@ queues:
   - branch: main
     merge_method: squash
     batch_size: 5
+    speculate: 2
 ```
 
 `batch_size` is the most pull requests to put on one candidate. It is a ceiling, not a target
 — the queue works up to it and back down on its own. Set it to `1` to verify one at a time.
+
+`speculate` is how many candidates may have checks running at once. It is `1` — off — unless
+you raise it. At `2` the queue builds the next candidate on top of the one in front instead of
+waiting for it to land, so the second batch's checks are already finished when the first one
+merges. It costs a CI run every time the one in front fails, because the one behind was
+verified on a tree that will never exist, so it is thrown away. Raise it if your checks are
+slow and reliable and you have runners to spare; leave it alone otherwise.
 
 Everything it accepts is in [schema/merge-queue.schema.json](schema/merge-queue.schema.json).
 Point your editor at it for completion and inline errors.

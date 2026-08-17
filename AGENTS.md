@@ -75,6 +75,12 @@ These are not style preferences. Breaking one lets a broken commit onto somebody
   third path. A candidate may carry several pull requests, in which case the verified tree is
   the one that exists once they have all landed; the states in between are on the way there,
   and nobody else can get in because our check is required and the tend holds the lock.
+- **A candidate may also be built on one that has not landed yet.** The base it was verified
+  against is then a tree that does not exist on the branch, so the result is evidence about
+  nothing until the ones it assumed have landed, at the heads it assumed, with nothing else in
+  between. `verification_assumptions` is that list; the branch tip is re-read and compared
+  against the last of them in the moment before merging. If any of them left, failed, or landed
+  as something else, the result is discarded, not used.
 - **A verification is evidence about exactly who rode it.** `verification_members` is that
   list. If somebody joins, leaves, or pushes, the result is about a tree nobody is asking
   about any more and it is discarded. `plan::decide` compares the whole list, not the first
@@ -84,13 +90,24 @@ These are not style preferences. Breaking one lets a broken commit onto somebody
   pull request that fails *on its own* has been shown to be at fault and leaves. Settling
   everyone on a shared red is how a merge queue earns a reputation for throwing out
   innocent work.
+- **A candidate that assumed somebody else's work also accuses nobody.** Only a pull request
+  verified on the branch's own tip, carrying nothing but itself, has been shown to be at fault.
+  A candidate built ahead of the queue that fails is thrown away and built again without the
+  assumption; it is not a verdict, and it does not move how many the queue verifies at once.
 - **How many to verify at once is a queue's own business, not the config's.** `batch_size`
   is a ceiling. `queues.verify_at_once` is where the queue actually is, and it starts at 1,
   climbs by one on every pass and halves on every failure. A queue on a flaky repository
   therefore shrinks itself without anybody editing a file.
+- **How deep to build ahead of the queue is a queue's own business too.** `speculate` is a
+  ceiling and it is 1 — off — until somebody raises it. `queues.speculate_to` is where the queue
+  is: it climbs when a candidate built ahead lands on the tree it assumed, and halves when one
+  is thrown away unused. A queue that has *halved* its width down to 1 never builds ahead at
+  all, because that is a queue telling us its checks are flaky, and flaky checks are exactly
+  where a run made ahead of the queue is wasted.
 - **Re-read the base and head in the moment before merging.** A verification that was true a
   minute ago is not evidence about now. If `base` or `head` moved, discard the result and
-  start over. Never merge on a stale verification to save a CI run.
+  start over, and if it assumed anything, check that the assumption materialised. Never merge
+  on a stale verification to save a CI run.
 - **A check is only evidence about the base it ran against, judged by when it started.** The
   fast path is allowed only when every required check *started* after the base last moved. A
   check that began at 09:50 and finished at 10:30 tested the base as it was before the 10:00

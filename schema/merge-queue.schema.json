@@ -44,6 +44,13 @@
             "minimum": 1,
             "default": 5,
             "description": "The most pull requests to put on one candidate and verify together. The queue starts at one and works up to this as it passes, and halves back down when a batch fails until it finds the one at fault. Set it to 1 to verify one at a time."
+          },
+          "speculate": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2,
+            "default": 1,
+            "description": "How many candidates may have checks running at once. 1 is off: each candidate waits for the one in front to land. 2 builds the next candidate on top of the one in front, so its checks are finished by the time the front merges. It spends a CI run every time the one in front fails, because what it verified is a tree that will never exist."
           }
         }
       }
