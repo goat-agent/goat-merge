@@ -192,7 +192,7 @@ impl Engine {
         }
         let status = Status::Cancelled { by: who.to_owned() };
         self.store
-            .settle(entry.id, status.headline(), &status.to_string(), None)
+            .settle(entry.id, status.headline(), &status.to_string(), None, None)
             .await?;
         self.store
             .write_down(
@@ -375,7 +375,13 @@ impl Engine {
             .map(|entry| entry.id)
             .collect();
 
-        let live = match self.store.live_attempt_on(tending.queue.id).await? {
+        let live = match self
+            .store
+            .live_attempts_on(tending.queue.id)
+            .await?
+            .into_iter()
+            .next()
+        {
             Some(attempt) => Some(self.catch_up_on(&tending, attempt).await?),
             None => None,
         };
@@ -644,7 +650,7 @@ impl Engine {
             self.tidy_away(tending, &attempt, &detail).await?;
         }
         self.store
-            .settle(entry.id, status.headline(), &detail, None)
+            .settle(entry.id, status.headline(), &detail, None, None)
             .await?;
         self.store
             .write_down(
@@ -1004,6 +1010,7 @@ impl Engine {
                 &branch,
                 &carried,
                 narrowed_from,
+                None,
             )
             .await?;
         let riding_on_it: Vec<&Riding> = batch
@@ -1046,7 +1053,7 @@ impl Engine {
     ) -> Result<Option<i64>, EngineError> {
         let Some(before) = self
             .store
-            .the_last_verification_on(tending.queue.id)
+            .what_last_failed_assuming(tending.queue.id, &[])
             .await?
         else {
             return Ok(None);
@@ -1069,6 +1076,7 @@ impl Engine {
                 riding.entry.id,
                 status.headline(),
                 &status.to_string(),
+                None,
                 None,
             )
             .await?;
@@ -1151,6 +1159,7 @@ impl Engine {
                         Status::MERGED,
                         &format!("merged as {}", sha.chars().take(7).collect::<String>()),
                         Some(&sha),
+                        Some(&riding.head),
                     )
                     .await?;
                 self.store
@@ -1199,6 +1208,7 @@ impl Engine {
                         status.headline(),
                         &status.to_string(),
                         None,
+                        None,
                     )
                     .await?;
                 self.github
@@ -1226,6 +1236,7 @@ impl Engine {
                 riding.entry.id,
                 status.headline(),
                 &status.to_string(),
+                None,
                 None,
             )
             .await?;

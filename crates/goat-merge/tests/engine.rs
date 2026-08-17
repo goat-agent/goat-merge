@@ -790,7 +790,7 @@ async fn retrying_puts_the_label_back_so_the_next_look_does_not_cancel_it() {
     standing
         .engine
         .store
-        .settle(entry.id, "Failed", "a check failed", None)
+        .settle(entry.id, "Failed", "a check failed", None, None)
         .await
         .expect("a settled entry");
 
@@ -1572,6 +1572,7 @@ async fn a_verification_that_never_got_a_candidate_does_not_hold_the_queue_forev
             "merge-queue/candidate-that-never-was",
             &[(entry.id, "head-one".to_owned())],
             None,
+            None,
         )
         .await
         .expect("a verification with no candidate, as a killed tend would leave");
@@ -1589,11 +1590,11 @@ async fn a_verification_that_never_got_a_candidate_does_not_hold_the_queue_forev
     let live = standing
         .engine
         .store
-        .live_attempt_on(standing.queue_id)
+        .live_attempts_on(standing.queue_id)
         .await
-        .expect("the live attempt");
+        .expect("the live attempts");
     assert!(
-        live.is_none_or(|attempt| attempt.candidate_sha.is_some()),
+        live.iter().all(|attempt| attempt.candidate_sha.is_some()),
         "a verification with no candidate can never be concluded by anything, so leaving it \
          live blocks every pull request behind it for good"
     );
@@ -1616,7 +1617,7 @@ async fn putting_the_label_back_on_gets_a_pull_request_in_again_without_a_webhoo
     standing
         .engine
         .store
-        .settle(entry.id, "Cancelled", "somebody took it out", None)
+        .settle(entry.id, "Cancelled", "somebody took it out", None, None)
         .await
         .expect("a settled entry, label still on because the person put it back");
 
