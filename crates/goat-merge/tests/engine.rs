@@ -1436,3 +1436,43 @@ async fn a_github_blip_reading_protection_settles_nobody() {
     );
     assert!(standing.world.merged_pull_requests().is_empty());
 }
+
+#[tokio::test]
+async fn a_deep_queue_is_read_from_github_a_few_at_a_time() {
+    let world = World::holding_one_ready_pull_request();
+    let deep: Vec<(i32, &str)> = (0..29)
+        .map(|at| {
+            (
+                200 + at,
+                Box::leak(format!("head-{at}").into_boxed_str()) as &str,
+            )
+        })
+        .collect();
+    for (_, head) in &deep {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    world.checks_on("head-one", vec![stale("test")]);
+    let Some(standing) = a_queue_of(Arc::clone(&world), &deep, 1).await else {
+        return;
+    };
+
+    let each = std::time::Duration::from_millis(60);
+    standing.world.takes_this_long_to_answer(each);
+    let began = std::time::Instant::now();
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend");
+    let took = began.elapsed();
+
+    let entries = 30;
+    let calls_each = 4;
+    let one_after_another = each * entries * calls_each;
+    assert!(
+        took < one_after_another / 2,
+        "reading {entries} pull requests one after another, and telling each of them where it \
+         stands one after another, would take well over {one_after_another:?}; this tend took \
+         {took:?}, which is not the saving concurrency is supposed to buy"
+    );
+}

@@ -63,6 +63,7 @@ pub struct World {
     pub heads_that_conflict: Mutex<Vec<String>>,
     pub merges_it_refuses: Mutex<Vec<i32>>,
     pub protection_is_down: Mutex<bool>,
+    pub answers_after: Mutex<std::time::Duration>,
     next_draft: Mutex<i32>,
 }
 
@@ -121,6 +122,10 @@ impl World {
             .filter(|branch| branch.starts_with("merge-queue/candidate-"))
             .cloned()
             .collect()
+    }
+
+    pub fn takes_this_long_to_answer(&self, each: std::time::Duration) {
+        *self.answers_after.lock().expect("delay") = each;
     }
 
     pub fn cannot_answer_about_protection(&self) {
@@ -215,6 +220,18 @@ pub fn running(name: &str, started_at: &str) -> Check {
     }
 }
 
+async fn dawdle(
+    State(world): State<Arc<World>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let wait = *world.answers_after.lock().expect("delay");
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+    next.run(request).await
+}
+
 pub async fn listening(world: Arc<World>) -> String {
     let repository = "/repos/{owner}/{repo}";
     let app = Router::new()
@@ -293,6 +310,10 @@ pub async fn listening(world: Arc<World>) -> String {
             post(comment),
         )
         .fallback(nothing_here)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&world),
+            dawdle,
+        ))
         .with_state(world);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

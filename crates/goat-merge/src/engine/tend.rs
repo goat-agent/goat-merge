@@ -375,6 +375,7 @@ impl Engine {
 
         let mut anything_in_flight = false;
         let mut riding = Vec::new();
+        let mut looking_on = Vec::new();
         let mut next = Next::Nothing;
         for entry in entries {
             let Some((_, looked)) = seen.iter().find(|(id, _)| *id == entry.id) else {
@@ -402,22 +403,24 @@ impl Engine {
                     &decision.status.to_string(),
                 )
                 .await?;
-            if !travelling.contains(&entry.id) {
-                self.say_where_it_stands(&tending, &entry, looked, &decision.status, changed)
-                    .await?;
-                continue;
-            }
-            if riding.is_empty() {
-                next = decision.next;
-            }
-            riding.push(Riding {
+            let standing = Riding {
                 entry,
                 head: looked.snapshot.head.to_string(),
                 title: looked.pull_request.title.clone(),
                 status: decision.status,
                 changed,
-            });
+            };
+            if !travelling.contains(&standing.entry.id) {
+                looking_on.push(standing);
+                continue;
+            }
+            if riding.is_empty() {
+                next = decision.next;
+            }
+            riding.push(standing);
         }
+
+        self.say_where_they_all_stand(&tending, &looking_on).await?;
 
         if !riding.is_empty() {
             let batch = TheBatch {
@@ -512,40 +515,48 @@ impl Engine {
         Ok(Some(still_here))
     }
 
+    async fn say_where_they_all_stand(
+        &self,
+        tending: &Tending,
+        looking_on: &[Riding],
+    ) -> Result<(), EngineError> {
+        let news: Vec<&Riding> = looking_on.iter().filter(|one| one.changed).collect();
+        if news.is_empty() {
+            return Ok(());
+        }
+        for some in news.chunks(AT_A_TIME) {
+            let together = some
+                .iter()
+                .map(|one| self.say_where_it_stands(tending, one));
+            futures_util::future::try_join_all(together).await?;
+        }
+        self.announce(&tending.name);
+        Ok(())
+    }
+
     async fn say_where_it_stands(
         &self,
         tending: &Tending,
-        entry: &Entry,
-        looked: &Seen,
-        status: &Status,
-        changed: bool,
+        riding: &Riding,
     ) -> Result<(), EngineError> {
-        if !changed {
-            return Ok(());
-        }
         self.show(
             tending.who,
             &tending.name,
-            &WhatTheCheckIsAbout {
-                head: looked.snapshot.head.as_str(),
-                pull_request: entry.pull_request,
-                branch: &tending.queue.branch,
-            },
-            status,
+            &riding.check_is_about(&tending.queue.branch),
+            &riding.status,
             None,
         )
         .await?;
-        if matches!(status, Status::Blocked(_)) {
+        if matches!(riding.status, Status::Blocked(_)) {
             self.github
                 .say_something(
                     tending.who,
                     &tending.name,
-                    entry.pull_request,
-                    &format!("**Merge Queue** — blocked. {status}"),
+                    riding.entry.pull_request,
+                    &format!("**Merge Queue** — blocked. {}", riding.status),
                 )
                 .await?;
         }
-        self.announce(&tending.name);
         Ok(())
     }
 
