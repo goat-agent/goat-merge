@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
+import { EntryLine } from "@/entities/queue-entry";
 import { WhatWeHave, WhatWentWrong } from "@/entities/trouble";
 import { QueueControls } from "@/features/queue-controls";
-import type { Row, Status, Trouble } from "@/shared/api";
+import type { QueueView, Row, Status, Trial, Trouble } from "@/shared/api";
 import { api } from "@/shared/api";
 import { useAsked, useEvery, useLive } from "@/shared/lib";
 import { Badge } from "@/shared/ui";
+import { BatchGroup } from "@/widgets/batch-group";
 import { DetailPanel } from "@/widgets/detail-panel";
 import { QueueBoard } from "@/widgets/queue-board";
 
@@ -16,27 +18,48 @@ function inFlight(row: Row): boolean {
   return row.settled_at === null && beingVerified.includes(row.status);
 }
 
-function stillWaiting(row: Row): boolean {
-  return row.settled_at === null && !beingVerified.includes(row.status);
+function inLine(row: Row): boolean {
+  return row.settled_at === null && row.status === "Queued";
 }
 
-function together(atOnce: number): string {
-  if (atOnce <= 1) return "one at a time";
-  return `up to ${atOnce} together`;
+function held(row: Row): boolean {
+  return (
+    row.settled_at === null && (row.status === "Waiting" || row.status === "Blocked")
+  );
 }
 
-function behind(rows: Row[]): string | null {
-  const numbers = rows.map((row) => `#${row.pull_request}`);
-  if (numbers.length === 0) return null;
-  if (numbers.length === 1) return `behind ${numbers[0]}`;
-  return `behind ${numbers.slice(0, -1).join(", ")} and ${numbers.at(-1)}`;
+type Riding = { attempt: Trial; rows: Row[] };
+
+function intoGroups(rows: Row[]): { groups: Riding[]; alone: Row[] } {
+  const riding = new Map<number, Riding>();
+  const alone: Row[] = [];
+  for (const row of rows) {
+    if (!row.attempt) {
+      alone.push(row);
+      continue;
+    }
+    const already = riding.get(row.attempt.id);
+    if (already) {
+      already.rows.push(row);
+    } else {
+      riding.set(row.attempt.id, { attempt: row.attempt, rows: [row] });
+    }
+  }
+  const groups: Riding[] = [];
+  for (const one of riding.values()) {
+    if (one.rows.length > 1) {
+      groups.push(one);
+    } else {
+      alone.push(...one.rows);
+    }
+  }
+  return { groups, alone };
 }
 
-function howItEnded(rows: Row[]): string {
-  const merged = rows.filter((row) => row.status === "Merged").length;
-  const turnedAway = rows.length - merged;
-  if (turnedAway === 0) return `${merged} merged`;
-  return `${merged} merged, ${turnedAway} did not`;
+function perCiRun(shown: QueueView): string {
+  const many = shown.verify_at_once;
+  const rate = many <= 1 ? "one at a time" : `${many} per CI run`;
+  return shown.verify_at_once_because ? `${rate} · ${shown.verify_at_once_because}` : rate;
 }
 
 export function QueuePage() {
@@ -60,24 +83,20 @@ export function QueuePage() {
         {wrong ? <WhatWentWrong trouble={wrong} place="banner" /> : null}
         <WhatWeHave asked={asked} of="the queue">
           {(shown) => {
-            const flying = shown.entries.filter(inFlight);
-            const waiting = shown.entries.filter(stillWaiting);
-            const note = behind(flying);
-            const recent = (landed.answer ?? []).slice(0, 5);
+            const flying = intoGroups(shown.entries.filter(inFlight));
+            const queued = shown.entries.filter(inLine);
+            const waiting = shown.entries.filter(held);
+            const recent = intoGroups((landed.answer ?? []).slice(0, 8));
             return (
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="min-h-0 flex-1 overflow-y-auto pb-6">
                 <QueueBoard
-                  label="Being verified"
-                  rows={flying}
+                  label="Batched"
+                  note={perCiRun(shown)}
+                  rows={flying.alone}
                   chosen={chosen}
                   onChoose={choose}
-                  roomy
-                  nothing={
-                    waiting.length === 0
-                      ? "Nothing is in this queue."
-                      : "Nothing is being verified right now, so the queue is not moving."
-                  }
-                  note={together(shown.verify_at_once)}
+                  shows="everything"
+                  nothing="Nothing is being verified. Add the merge-queue label to a pull request to put it in."
                   aside={
                     <div className="flex items-center gap-3">
                       {shown.paused ? (
@@ -95,24 +114,55 @@ export function QueuePage() {
                       />
                     </div>
                   }
-                />
+                >
+                  {flying.groups.map((riding) => (
+                    <BatchGroup
+                      key={riding.attempt.id}
+                      attempt={riding.attempt}
+                      rows={riding.rows}
+                      owner={owner}
+                      name={name}
+                    >
+                      {riding.rows.map((row, at) => (
+                        <EntryLine
+                          key={row.pull_request}
+                          row={row}
+                          place={at + 1}
+                          chosen={chosen}
+                          onChoose={choose}
+                          shows="identity"
+                        />
+                      ))}
+                    </BatchGroup>
+                  ))}
+                </QueueBoard>
 
-                {waiting.length > 0 || flying.length > 0 ? (
+                {queued.length > 0 ? (
                   <QueueBoard
-                    label="Waiting"
-                    {...(note ? { note } : {})}
+                    label="In line"
+                    note="not yet in a batch"
+                    rows={queued}
+                    chosen={chosen}
+                    onChoose={choose}
+                    numbered
+                    nothing=""
+                  />
+                ) : null}
+
+                {waiting.length > 0 ? (
+                  <QueueBoard
+                    label="Held"
+                    note="not in line"
                     rows={waiting}
                     chosen={chosen}
                     onChoose={choose}
-                    roomy
-                    nothing="Nobody is waiting for a turn."
+                    nothing=""
                   />
                 ) : null}
 
                 <QueueBoard
                   label="Done"
-                  note={howItEnded(landed.answer ?? [])}
-                  rows={recent}
+                  rows={recent.alone}
                   chosen={chosen}
                   onChoose={choose}
                   nothing="Nothing has been through this queue yet."
@@ -124,7 +174,27 @@ export function QueuePage() {
                       See all
                     </Link>
                   }
-                />
+                >
+                  {recent.groups.map((riding) => (
+                    <BatchGroup
+                      key={riding.attempt.id}
+                      attempt={riding.attempt}
+                      rows={riding.rows}
+                      owner={owner}
+                      name={name}
+                    >
+                      {riding.rows.map((row) => (
+                        <EntryLine
+                          key={row.pull_request}
+                          row={row}
+                          chosen={chosen}
+                          onChoose={choose}
+                          shows="identity"
+                        />
+                      ))}
+                    </BatchGroup>
+                  ))}
+                </QueueBoard>
               </div>
             );
           }}
