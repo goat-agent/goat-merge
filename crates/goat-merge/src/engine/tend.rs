@@ -461,7 +461,7 @@ impl Engine {
                 .store
                 .entry(tending.queue.id, pull.number)
                 .await?
-                .is_some_and(|entry| entry.settled_at.is_none())
+                .is_some()
             {
                 continue;
             }
@@ -1046,6 +1046,14 @@ impl Engine {
             None,
         )
         .await?;
+        self.github
+            .remove_label(
+                tending.who,
+                &tending.name,
+                riding.entry.pull_request,
+                config::LABEL,
+            )
+            .await?;
         Ok(())
     }
 
