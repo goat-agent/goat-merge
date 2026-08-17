@@ -57,10 +57,7 @@ impl Riding {
 fn what_to_call_the_candidate(aboard: &[Aboard], onto: &Sha) -> String {
     let first = aboard.first().map_or(0, |one| one.number);
     let sha7: String = onto.as_str().chars().take(7).collect();
-    match aboard.len() {
-        0 | 1 => format!("merge-queue/candidate-{first}-{sha7}"),
-        many => format!("merge-queue/candidate-{first}-and-{}-more-{sha7}", many - 1),
-    }
+    format!("merge-queue/candidate-{first}-{sha7}")
 }
 
 fn what_to_call_the_draft(riding: &[&Riding]) -> String {
