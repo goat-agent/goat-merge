@@ -3,6 +3,13 @@ import { Children, type ReactNode } from "react";
 import { EntryLine } from "@/entities/queue-entry";
 import type { Row } from "@/shared/api";
 
+function saidByEveryone(rows: Row[]): string | null {
+  if (rows.length < 2) return null;
+  const first = rows[0]?.detail ?? "";
+  if (!first) return null;
+  return rows.every((row) => row.detail === first) ? first : null;
+}
+
 export function QueueBoard({
   label,
   note,
@@ -26,11 +33,13 @@ export function QueueBoard({
   aside?: ReactNode;
   children?: ReactNode;
 }) {
+  const everyone = saidByEveryone(rows);
   return (
     <section>
       <header className="flex h-header items-center gap-3 px-4">
         <h2 className="text-caption uppercase text-ink-faint">{label}</h2>
         {note ? <span className="text-ui text-ink-faint">{note}</span> : null}
+        {everyone ? <span className="text-ui text-ink-faint">{everyone}</span> : null}
         <span className="flex-1" />
         {aside}
       </header>
@@ -47,7 +56,7 @@ export function QueueBoard({
               {...(numbered ? { place: at + 1 } : {})}
               chosen={chosen}
               onChoose={onChoose}
-              shows={shows}
+              shows={everyone ? "identity" : shows}
             />
           ))}
         </ul>

@@ -30,33 +30,32 @@ export function EntryLine({
         onClick={() => onChoose(row.pull_request)}
         aria-current={picked}
         className={cn(
-          "flex w-full flex-col gap-1 border-b border-hairline px-3 py-2 text-left text-ui transition-colors last:border-b-0",
+          "flex w-full items-baseline gap-3 border-b border-hairline px-3 py-1.5 text-left text-ui transition-colors last:border-b-0",
           picked ? "bg-fill-active" : "hover:bg-fill-hover",
         )}
       >
-        <span className="flex w-full items-baseline gap-3">
-          <span className="w-place shrink-0 text-right font-mono text-mono text-ink-faint">
-            {place ?? ""}
-          </span>
-          <span className="w-number shrink-0 font-mono text-mono text-ink-faint">
-            #{row.pull_request}
-          </span>
-          <span className="min-w-0 flex-1 truncate text-ink">{row.title || "untitled"}</span>
-          {row.expedited_by ? <Zap className="size-3.5 shrink-0 self-center text-warning" /> : null}
-          <span className="shrink-0 text-ink-faint">{row.requested_by}</span>
-          <span className="w-waited shrink-0 text-right tabular-nums text-ink-faint">
-            {waited(row)}
-          </span>
+        <span className="w-place shrink-0 text-right font-mono text-mono text-ink-faint">
+          {place ?? ""}
         </span>
+        <span className="w-number shrink-0 font-mono text-mono text-ink-faint">
+          #{row.pull_request}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-ink">{row.title || "untitled"}</span>
+        {row.expedited_by ? <Zap className="size-3.5 shrink-0 self-center text-warning" /> : null}
         {shows === "everything" ? (
-          <span className="flex w-full items-baseline gap-3">
-            <span className="w-place shrink-0" />
+          <>
             <span className="w-standing shrink-0">
               <Standing status={row.status} />
             </span>
-            <span className="min-w-0 flex-1 text-ink-faint">{row.detail}</span>
-          </span>
+            <span className="w-detail-column shrink-0 truncate text-ink-faint" title={row.detail}>
+              {row.detail}
+            </span>
+          </>
         ) : null}
+        <span className="shrink-0 text-ink-faint">{row.requested_by}</span>
+        <span className="w-waited shrink-0 text-right tabular-nums text-ink-faint">
+          {waited(row)}
+        </span>
       </button>
     </li>
   );

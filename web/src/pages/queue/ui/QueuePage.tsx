@@ -19,13 +19,11 @@ function inFlight(row: Row): boolean {
 }
 
 function inLine(row: Row): boolean {
-  return row.settled_at === null && row.status === "Queued";
+  return row.settled_at === null && row.queued_at !== null && !inFlight(row);
 }
 
 function held(row: Row): boolean {
-  return (
-    row.settled_at === null && (row.status === "Waiting" || row.status === "Blocked")
-  );
+  return row.settled_at === null && row.queued_at === null;
 }
 
 type Riding = { attempt: Trial; rows: Row[] };
