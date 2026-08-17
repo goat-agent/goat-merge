@@ -28,6 +28,8 @@ pub struct Queue {
     pub check_timeout: Duration,
     #[serde(default = "five")]
     pub batch_size: usize,
+    #[serde(default = "one")]
+    pub speculate: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -87,11 +89,16 @@ impl Queue {
             merge_method: None,
             check_timeout: half_an_hour_and_a_quarter(),
             batch_size: five(),
+            speculate: one(),
         }
     }
 
     pub fn most_it_will_verify_at_once(&self) -> usize {
         self.batch_size.max(1)
+    }
+
+    pub fn most_it_will_speculate(&self) -> usize {
+        self.speculate.clamp(1, 2)
     }
 }
 
@@ -121,6 +128,10 @@ fn half_an_hour_and_a_quarter() -> Duration {
 
 fn five() -> usize {
     5
+}
+
+fn one() -> usize {
+    1
 }
 
 fn duration<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {

@@ -7,13 +7,23 @@ pub enum Status {
     NotQueued(NotQueued),
     Waiting(WhyWaiting),
     Blocked(WhyBlocked),
-    Queued { ahead: usize },
-    Preparing { alongside: Vec<u64> },
-    Validating { alongside: Vec<u64> },
+    Queued {
+        ahead: usize,
+    },
+    Preparing {
+        alongside: Vec<u64>,
+        assuming: Vec<u64>,
+    },
+    Validating {
+        alongside: Vec<u64>,
+        assuming: Vec<u64>,
+    },
     Merging,
     Merged,
     Failed(WhyFailed),
-    Cancelled { by: String },
+    Cancelled {
+        by: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +39,7 @@ pub enum WhyWaiting {
     NeedsApproval { have: u32, want: u32 },
     MergeabilityUnknown,
     RequiredChecksPending { done: usize, total: usize },
+    ThoseAheadHaveNotLanded { numbers: Vec<u64> },
 }
 
 impl WhyWaiting {
@@ -98,14 +109,24 @@ impl fmt::Display for Status {
             Self::Queued { ahead: 0 } => write!(f, "next in line"),
             Self::Queued { ahead: 1 } => write!(f, "1 pull request ahead"),
             Self::Queued { ahead } => write!(f, "{ahead} pull requests ahead"),
-            Self::Preparing { alongside } => write!(
+            Self::Preparing {
+                alongside,
+                assuming,
+            } => write!(
                 f,
-                "building a candidate on the latest base{}",
+                "building a candidate on {}{}",
+                what_it_is_built_on(assuming),
                 also_carrying(alongside)
             ),
-            Self::Validating { alongside } => {
-                write!(f, "checking the candidate{}", also_carrying(alongside))
-            }
+            Self::Validating {
+                alongside,
+                assuming,
+            } => write!(
+                f,
+                "checking the candidate{}{}",
+                also_carrying(alongside),
+                which_assumes(assuming)
+            ),
             Self::Merging => write!(f, "checks passed, merging"),
             Self::Merged => write!(f, "merged"),
             Self::Failed(why) => write!(f, "{why}"),
@@ -143,6 +164,12 @@ impl fmt::Display for WhyWaiting {
             Self::RequiredChecksPending { done, total } => {
                 write!(f, "{done}/{total} checks passed")
             }
+            Self::ThoseAheadHaveNotLanded { numbers } => write!(
+                f,
+                "the checks passed, but this was verified on top of {}, so it waits for them \
+                 to land",
+                numbers_phrase(numbers)
+            ),
         }
     }
 }
@@ -189,6 +216,21 @@ impl fmt::Display for WhyFailed {
             Self::TimedOut => write!(f, "the checks did not finish in time"),
             Self::MergeRejected { message } => write!(f, "GitHub refused the merge: {message}"),
         }
+    }
+}
+
+fn what_it_is_built_on(assuming: &[u64]) -> String {
+    match assuming {
+        [] => "the latest base".to_owned(),
+        many => format!("top of {}, which have not landed yet", numbers_phrase(many)),
+    }
+}
+
+fn which_assumes(assuming: &[u64]) -> String {
+    match assuming {
+        [] => String::new(),
+        [one] => format!(", which assumes #{one} lands first"),
+        many => format!(", which assumes {} land first", numbers_phrase(many)),
     }
 }
 

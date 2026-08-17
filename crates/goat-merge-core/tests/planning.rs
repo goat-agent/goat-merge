@@ -1,8 +1,9 @@
 mod support;
 
 use goat_merge_core::{
-    Aboard, Conclusion, Enqueue, InQueue, MergeMethod, Next, NotQueued, Queue, Sha, Status,
-    Verification, WhyBlocked, WhyFailed, WhyWaiting, after_a_batch, decide, how_many_to_verify,
+    Aboard, Assumed, Conclusion, Enqueue, HowItWent, InQueue, MergeMethod, Next, NotQueued, Queue,
+    Sha, Status, Verification, WhyBlocked, WhyFailed, WhyWaiting, after_a_batch, after_a_chain,
+    decide, how_deep_to_speculate, how_many_to_verify,
 };
 use std::sync::LazyLock;
 
@@ -29,10 +30,15 @@ fn alone() -> &'static [Aboard] {
     &ALONE
 }
 
+static NOBODY: LazyLock<Vec<Aboard>> = LazyLock::new(Vec::new);
+static BASE_ONE: LazyLock<Sha> = LazyLock::new(|| Sha::from("base-one"));
+
 fn at_the_front(aboard: &[Aboard]) -> InQueue<'_> {
     InQueue {
         ahead: 0,
         aboard,
+        assuming: &NOBODY,
+        onto: &BASE_ONE,
         paused: false,
         verification: None,
     }
@@ -42,6 +48,7 @@ fn verified(conclusion: Conclusion) -> Verification {
     Verification {
         base: Sha::from("base-one"),
         aboard: ALONE.clone(),
+        assumed: Vec::new(),
         candidate: Sha::from("candidate-one"),
         conclusion,
         ran_out_of_time: false,
@@ -146,7 +153,8 @@ fn the_front_of_a_busy_queue_builds_a_candidate_on_the_current_base() {
     assert_eq!(
         decision.status,
         Status::Preparing {
-            alongside: Vec::new()
+            alongside: Vec::new(),
+            assuming: Vec::new()
         }
     );
     assert_eq!(
@@ -194,7 +202,8 @@ fn a_pull_request_whose_base_moved_is_revalidated_not_merged() {
     assert_eq!(
         decision.status,
         Status::Preparing {
-            alongside: Vec::new()
+            alongside: Vec::new(),
+            assuming: Vec::new()
         }
     );
 }
@@ -290,7 +299,8 @@ fn a_candidate_still_running_is_left_alone() {
     assert_eq!(
         decision.status,
         Status::Validating {
-            alongside: Vec::new()
+            alongside: Vec::new(),
+            assuming: Vec::new()
         }
     );
     assert_eq!(decision.next, Next::Nothing);
@@ -627,4 +637,232 @@ fn nothing_tells_us_when_github_finishes_working_out_whether_this_merges() {
              {waiting}"
         );
     }
+}
+
+static AHEAD: LazyLock<Vec<Aboard>> = LazyLock::new(|| carrying(&[(11, "head-of-another")]));
+static CANDIDATE_AHEAD: LazyLock<Sha> = LazyLock::new(|| Sha::from("candidate-ahead"));
+
+fn speculating(aboard: &[Aboard]) -> InQueue<'_> {
+    InQueue {
+        assuming: &AHEAD,
+        onto: &CANDIDATE_AHEAD,
+        ..at_the_front(aboard)
+    }
+}
+
+fn verified_on_top(conclusion: Conclusion, went: HowItWent) -> Verification {
+    Verification {
+        base: Sha::from("candidate-ahead"),
+        assumed: vec![Assumed {
+            number: 11,
+            head: Sha::from("head-of-another"),
+            went,
+        }],
+        ..verified(conclusion)
+    }
+}
+
+fn landed_as_the_tip() -> HowItWent {
+    HowItWent::Landed {
+        at: Sha::from("base-one"),
+        head: Sha::from("head-of-another"),
+    }
+}
+
+#[test]
+fn a_speculative_candidate_never_takes_the_fast_path() {
+    let snapshot = a_pull_request().done();
+
+    let decision = decide(&snapshot, &main_queue(), &speculating(alone()));
+
+    assert_eq!(
+        decision.next,
+        Next::BuildCandidate {
+            onto: Sha::from("candidate-ahead"),
+            aboard: ALONE.clone(),
+        },
+        "the pull request's own checks tested the branch tip, which is not the tree this would \
+         land on"
+    );
+}
+
+#[test]
+fn a_candidate_that_passed_waits_while_what_it_assumed_is_still_going() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(Conclusion::Success, HowItWent::StillGoing);
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(
+        decision.status,
+        Status::Waiting(WhyWaiting::ThoseAheadHaveNotLanded { numbers: vec![11] })
+    );
+    assert_eq!(
+        decision.next,
+        Next::Nothing,
+        "merging now would put a tree on the branch that nothing has tested"
+    );
+}
+
+#[test]
+fn a_candidate_merges_once_what_it_assumed_has_landed_as_the_tip() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(Conclusion::Success, landed_as_the_tip());
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(decision.status, Status::Merging);
+    assert_eq!(
+        decision.next,
+        Next::Merge {
+            method: MergeMethod::Squash
+        }
+    );
+}
+
+#[test]
+fn a_candidate_whose_assumption_landed_but_let_somebody_else_in_is_thrown_away() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(
+        Conclusion::Success,
+        HowItWent::Landed {
+            at: Sha::from("somebody-elses-merge"),
+            head: Sha::from("head-of-another"),
+        },
+    );
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).next,
+        Next::DiscardVerification,
+        "the tree that landed is not the tree this was verified on top of"
+    );
+}
+
+#[test]
+fn a_candidate_whose_assumption_landed_at_a_different_head_is_thrown_away() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(
+        Conclusion::Success,
+        HowItWent::Landed {
+            at: Sha::from("base-one"),
+            head: Sha::from("head-that-was-pushed-after"),
+        },
+    );
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).next,
+        Next::DiscardVerification
+    );
+}
+
+#[test]
+fn a_candidate_whose_assumption_left_the_queue_is_thrown_away() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(Conclusion::Success, HowItWent::GoneFromTheQueue);
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).next,
+        Next::DiscardVerification
+    );
+}
+
+#[test]
+fn a_speculative_candidate_that_fails_accuses_nobody() {
+    let snapshot = a_pull_request().done();
+    let failed = Verification {
+        failed_checks: vec!["integration tests".to_owned()],
+        ..verified_on_top(Conclusion::Failure, landed_as_the_tip())
+    };
+    let entry = InQueue {
+        verification: Some(&failed),
+        ..speculating(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(
+        decision.next,
+        Next::DiscardVerification,
+        "the failure may belong to the work this assumed, so it is built again without it"
+    );
+    assert!(
+        !decision.status.is_settled(),
+        "only a pull request verified on the branch's own tip, carrying nothing but itself, has \
+         been shown to be at fault"
+    );
+}
+
+#[test]
+fn a_candidate_that_now_assumes_somebody_different_is_thrown_away() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(Conclusion::Success, landed_as_the_tip());
+    let now_assuming = carrying(&[(12, "head-of-a-third")]);
+    let entry = InQueue {
+        verification: Some(&passed),
+        assuming: &now_assuming,
+        ..speculating(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).next,
+        Next::DiscardVerification
+    );
+}
+
+#[test]
+fn a_queue_that_verifies_one_at_a_time_does_not_speculate() {
+    let rules = Queue {
+        speculate: 2,
+        ..main_queue()
+    };
+
+    assert_eq!(
+        how_deep_to_speculate(&rules, 2, 1),
+        1,
+        "a queue that halved its way down to one is a queue whose checks are flaky, and every \
+         speculative run there is thrown away"
+    );
+    assert_eq!(how_deep_to_speculate(&rules, 2, 2), 2);
+}
+
+#[test]
+fn speculation_stays_off_until_somebody_turns_it_on() {
+    let rules = main_queue();
+
+    assert_eq!(rules.most_it_will_speculate(), 1);
+    assert_eq!(how_deep_to_speculate(&rules, 5, 5), 1);
+    assert_eq!(after_a_chain(1, &rules, false), 1);
+}
+
+#[test]
+fn a_chain_that_was_thrown_away_makes_the_queue_speculate_less() {
+    let rules = Queue {
+        speculate: 2,
+        ..main_queue()
+    };
+
+    assert_eq!(after_a_chain(2, &rules, true), 1);
+    assert_eq!(after_a_chain(1, &rules, true), 1, "it never goes below one");
+    assert_eq!(after_a_chain(1, &rules, false), 2);
+    assert_eq!(after_a_chain(2, &rules, false), 2, "the ceiling holds");
 }

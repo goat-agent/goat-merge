@@ -133,6 +133,8 @@ pub async fn simulate(
         &InQueue {
             ahead: 0,
             aboard: &on_its_own,
+            assuming: &[],
+            onto: &looked.snapshot.base.sha,
             paused: queue.paused,
             verification: None,
         },

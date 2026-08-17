@@ -10,9 +10,24 @@ pub struct Aboard {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HowItWent {
+    StillGoing,
+    Landed { at: Sha, head: Sha },
+    GoneFromTheQueue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assumed {
+    pub number: u64,
+    pub head: Sha,
+    pub went: HowItWent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verification {
     pub base: Sha,
     pub aboard: Vec<Aboard>,
+    pub assumed: Vec<Assumed>,
     pub candidate: Sha,
     pub conclusion: Conclusion,
     pub ran_out_of_time: bool,
@@ -23,8 +38,17 @@ pub struct Verification {
 pub struct InQueue<'a> {
     pub ahead: usize,
     pub aboard: &'a [Aboard],
+    pub assuming: &'a [Aboard],
+    pub onto: &'a Sha,
     pub paused: bool,
     pub verification: Option<&'a Verification>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TheAssumption {
+    Held,
+    NotYet { waiting_on: Vec<u64> },
+    Broken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +91,12 @@ pub fn decide(snapshot: &Snapshot, queue: &Queue, entry: &InQueue<'_>) -> Decisi
         return settled(Status::Queued { ahead: entry.ahead });
     }
     let alongside = alongside(entry.aboard, snapshot.number);
-    let alone = entry.aboard.len() <= 1;
+    let assuming = numbers(entry.assuming);
+    let preparing = Status::Preparing {
+        alongside: alongside.clone(),
+        assuming: assuming.clone(),
+    };
+    let alone = entry.aboard.len() <= 1 && entry.assuming.is_empty();
 
     let Some(verification) = entry.verification else {
         return if alone && already_verified(snapshot) {
@@ -77,30 +106,49 @@ pub fn decide(snapshot: &Snapshot, queue: &Queue, entry: &InQueue<'_>) -> Decisi
             }
         } else {
             Decision {
-                status: Status::Preparing { alongside },
+                status: preparing,
                 next: Next::BuildCandidate {
-                    onto: snapshot.base.sha.clone(),
+                    onto: entry.onto.clone(),
                     aboard: entry.aboard.to_vec(),
                 },
             }
         };
     };
 
-    if verification.base != snapshot.base.sha || verification.aboard != entry.aboard {
+    if verification.base != *entry.onto
+        || verification.aboard != entry.aboard
+        || !the_same_ones(&verification.assumed, entry.assuming)
+    {
         return Decision {
-            status: Status::Preparing { alongside },
+            status: preparing,
             next: Next::DiscardVerification,
         };
     }
 
+    let at_fault_if_it_fails = verification.aboard.len() <= 1 && verification.assumed.is_empty();
+
     match verification.conclusion {
-        Conclusion::Success => Decision {
-            status: Status::Merging,
-            next: Next::Merge { method },
-        },
-        Conclusion::Failure if !alone => Decision {
+        Conclusion::Success => {
+            match how_the_assumption_turned_out(&verification.assumed, &snapshot.base.sha) {
+                TheAssumption::Held => Decision {
+                    status: Status::Merging,
+                    next: Next::Merge { method },
+                },
+                TheAssumption::NotYet { waiting_on } => {
+                    settled(Status::Waiting(WhyWaiting::ThoseAheadHaveNotLanded {
+                        numbers: waiting_on,
+                    }))
+                }
+                TheAssumption::Broken => Decision {
+                    status: preparing,
+                    next: Next::DiscardVerification,
+                },
+            }
+        }
+        Conclusion::Failure if !at_fault_if_it_fails => Decision {
             status: Status::Preparing {
                 alongside: Vec::new(),
+                assuming: Vec::new(),
             },
             next: Next::DiscardVerification,
         },
@@ -110,8 +158,46 @@ pub fn decide(snapshot: &Snapshot, queue: &Queue, entry: &InQueue<'_>) -> Decisi
         Conclusion::Failure => settled(Status::Failed(WhyFailed::ChecksFailed {
             checks: verification.failed_checks.clone(),
         })),
-        Conclusion::Pending => settled(Status::Validating { alongside }),
+        Conclusion::Pending => settled(Status::Validating {
+            alongside,
+            assuming,
+        }),
     }
+}
+
+pub fn how_the_assumption_turned_out(assumed: &[Assumed], tip: &Sha) -> TheAssumption {
+    let mut waiting_on = Vec::new();
+    for one in assumed {
+        match &one.went {
+            HowItWent::GoneFromTheQueue => return TheAssumption::Broken,
+            HowItWent::Landed { head, .. } if *head != one.head => return TheAssumption::Broken,
+            HowItWent::Landed { .. } => {}
+            HowItWent::StillGoing => waiting_on.push(one.number),
+        }
+    }
+    if !waiting_on.is_empty() {
+        return TheAssumption::NotYet { waiting_on };
+    }
+    match assumed.last() {
+        None => TheAssumption::Held,
+        Some(Assumed {
+            went: HowItWent::Landed { at, .. },
+            ..
+        }) if at == tip => TheAssumption::Held,
+        Some(_) => TheAssumption::Broken,
+    }
+}
+
+fn the_same_ones(assumed: &[Assumed], assuming: &[Aboard]) -> bool {
+    assumed.len() == assuming.len()
+        && assumed
+            .iter()
+            .zip(assuming)
+            .all(|(was, now)| was.number == now.number && was.head == now.head)
+}
+
+fn numbers(aboard: &[Aboard]) -> Vec<u64> {
+    aboard.iter().map(|one| one.number).collect()
 }
 
 fn alongside(aboard: &[Aboard], mine: u64) -> Vec<u64> {
@@ -133,6 +219,21 @@ pub fn after_a_batch(now: usize, size: usize, rules: &Queue, passed: bool) -> us
             .min(rules.most_it_will_verify_at_once())
     } else {
         (size / 2).max(1)
+    }
+}
+
+pub fn how_deep_to_speculate(rules: &Queue, now: usize, verifying_at_once: usize) -> usize {
+    if verifying_at_once <= 1 {
+        return 1;
+    }
+    now.clamp(1, rules.most_it_will_speculate())
+}
+
+pub fn after_a_chain(now: usize, rules: &Queue, wasted: bool) -> usize {
+    if wasted {
+        (now / 2).max(1)
+    } else {
+        now.saturating_add(1).min(rules.most_it_will_speculate())
     }
 }
 

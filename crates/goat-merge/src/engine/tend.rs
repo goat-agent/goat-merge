@@ -406,6 +406,8 @@ impl Engine {
                 &InQueue {
                     ahead: ready.iter().position(|id| *id == entry.id).unwrap_or(0),
                     aboard: &aboard,
+                    assuming: &[],
+                    onto: &looked.snapshot.base.sha,
                     paused: tending.queue.paused,
                     verification: live.as_ref().map(|(_, seen)| seen),
                 },
@@ -809,6 +811,7 @@ impl Engine {
         let verification = Verification {
             base: Sha::from(attempt.base.clone()),
             aboard,
+            assumed: Vec::new(),
             candidate: Sha::from(attempt.candidate_sha.clone().unwrap_or_default()),
             conclusion: match attempt.conclusion.as_str() {
                 "success" => Conclusion::Success,
