@@ -1018,10 +1018,14 @@ impl Engine {
             }
             Next::DiscardVerification => {
                 if let Some(attempt) = &batch.attempt {
-                    let narrowing = matches!(attempt.conclusion.as_str(), "failure" | "timed_out")
-                        && batch.assumed.is_empty();
+                    let checks_failed =
+                        matches!(attempt.conclusion.as_str(), "failure" | "timed_out");
+                    let narrowing = checks_failed && batch.assumed.is_empty();
                     let because = if narrowing {
                         "the checks failed, so fewer will be verified together next time"
+                    } else if !batch.assumed.is_empty() && checks_failed {
+                        "it failed on a tree built ahead of the queue, which shows nobody to be \
+                         at fault, so it is built again on the branch itself"
                     } else if !batch.assumed.is_empty() {
                         "what it was built on did not land as it assumed"
                     } else {

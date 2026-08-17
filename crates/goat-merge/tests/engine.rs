@@ -2193,3 +2193,68 @@ async fn a_conflict_with_a_candidate_that_has_not_landed_accuses_nobody() {
         "it has not been asked to leave, so its label stays on"
     );
 }
+
+#[tokio::test]
+async fn a_candidate_built_ahead_that_fails_says_which_of_the_two_things_went_wrong() {
+    let world = two_ready_pull_requests();
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front candidate");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the one on top of it");
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![failing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front merges");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend that looks at the one behind");
+
+    let behind = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 124)
+        .await
+        .expect("the entry")
+        .expect("the one behind");
+    assert!(
+        behind.settled_at.is_none(),
+        "it failed on a tree built ahead of the queue, which shows nobody to be at fault"
+    );
+    let thrown = standing
+        .engine
+        .store
+        .attempts_carrying(behind.id)
+        .await
+        .expect("what it rode")
+        .into_iter()
+        .filter_map(|attempt| attempt.discarded_because)
+        .collect::<Vec<_>>();
+    assert!(
+        thrown
+            .iter()
+            .any(|because| because.contains("built ahead of the queue")),
+        "a reason that says the assumption did not hold, when it held and the checks simply \
+         failed, sends somebody looking in the wrong place: {thrown:?}"
+    );
+}
