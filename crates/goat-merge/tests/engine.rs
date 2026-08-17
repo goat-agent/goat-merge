@@ -1374,3 +1374,65 @@ async fn a_batch_that_fails_writes_down_that_nobody_is_at_fault_yet() {
         notes.iter().map(|note| &note.detail).collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn a_repository_that_reports_no_merge_method_at_all_is_a_bad_read_not_a_verdict() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2099-01-01T00:00:00Z")]);
+    *world.allow.lock().expect("allow") = Vec::new();
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend");
+
+    let entry = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 123)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    assert_ne!(
+        entry.status, "Blocked",
+        "github cannot mean that a repository allows no merge method, so believing it and \
+         telling somebody their pull request is blocked writes a false verdict onto their work"
+    );
+    assert!(
+        standing.world.merged_pull_requests().is_empty(),
+        "nothing should merge from a read the queue does not trust either"
+    );
+}
+
+#[tokio::test]
+async fn a_github_blip_reading_protection_settles_nobody() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2099-01-01T00:00:00Z")]);
+    world.cannot_answer_about_protection();
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+
+    let outcome = standing.engine.tend(standing.queue_id).await;
+
+    assert!(
+        outcome.is_err(),
+        "a 503 from github is a blip to come back from, not an answer to decide on"
+    );
+    let entry = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 123)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    assert_eq!(
+        entry.settled_at, None,
+        "swallowing the blip is how a pull request gets settled over nothing"
+    );
+    assert!(standing.world.merged_pull_requests().is_empty());
+}

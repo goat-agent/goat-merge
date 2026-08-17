@@ -62,6 +62,7 @@ pub struct World {
     pub made_branches: Mutex<Vec<String>>,
     pub heads_that_conflict: Mutex<Vec<String>>,
     pub merges_it_refuses: Mutex<Vec<i32>>,
+    pub protection_is_down: Mutex<bool>,
     next_draft: Mutex<i32>,
 }
 
@@ -120,6 +121,10 @@ impl World {
             .filter(|branch| branch.starts_with("merge-queue/candidate-"))
             .cloned()
             .collect()
+    }
+
+    pub fn cannot_answer_about_protection(&self) {
+        *self.protection_is_down.lock().expect("protection") = true;
     }
 
     pub fn refuses_to_merge(&self, number: i32) {
@@ -389,13 +394,21 @@ async fn tip(
     }
 }
 
-async fn protection(State(world): State<Arc<World>>) -> axum::Json<Value> {
+async fn protection(State(world): State<Arc<World>>) -> Response {
+    if *world.protection_is_down.lock().expect("protection") {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "message": "No server is currently available" })),
+        )
+            .into_response();
+    }
     axum::Json(json!({
         "required_status_checks": { "contexts": world.required.lock().expect("required").clone() },
         "required_pull_request_reviews": {
             "required_approving_review_count": *world.required_approvals.lock().expect("approvals"),
         },
     }))
+    .into_response()
 }
 
 async fn rules() -> axum::Json<Value> {

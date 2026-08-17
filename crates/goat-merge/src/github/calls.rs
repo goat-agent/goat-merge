@@ -311,8 +311,7 @@ impl Github {
                 who,
                 &format!("/repos/{repository}/branches/{branch}/protection"),
             )
-            .await
-            .unwrap_or(None);
+            .await?;
         if let Some(classic) = classic {
             protection.declared_anywhere = true;
             if let Some(checks) = classic.required_status_checks {
@@ -325,8 +324,7 @@ impl Github {
 
         let rules: Vec<Rule> = self
             .get_if_there(who, &format!("/repos/{repository}/rules/branches/{branch}"))
-            .await
-            .unwrap_or(None)
+            .await?
             .unwrap_or_default();
         for rule in rules {
             let Some(parameters) = rule.parameters else {
@@ -469,8 +467,7 @@ impl Github {
                 who,
                 &format!("/repos/{repository}/contents/{path}?ref={branch}"),
             )
-            .await
-            .unwrap_or(None);
+            .await?;
         let mut body = json!({
             "message": message,
             "branch": branch,
