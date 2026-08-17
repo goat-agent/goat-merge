@@ -2153,3 +2153,46 @@ async fn a_candidate_is_not_thrown_away_because_github_paused_to_recompute_merge
          run for nothing"
     );
 }
+
+#[tokio::test]
+async fn a_conflict_with_a_candidate_that_has_not_landed_accuses_nobody() {
+    let world = two_ready_pull_requests();
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front candidate");
+    standing.world.nothing_merges_into("head-two");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend that tries to build on top of the front");
+
+    let behind = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 124)
+        .await
+        .expect("the entry")
+        .expect("the one behind");
+    assert!(
+        behind.settled_at.is_none(),
+        "a tree that only exists because we assumed somebody else's work would land is not the \
+         branch, and not merging into it says nothing about whether this merges"
+    );
+    assert!(
+        !standing
+            .world
+            .labels_removed
+            .lock()
+            .expect("labels")
+            .iter()
+            .any(|(number, _)| *number == 124),
+        "it has not been asked to leave, so its label stays on"
+    );
+}

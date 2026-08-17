@@ -1181,6 +1181,19 @@ impl Engine {
                     }
                     carried.push((riding.entry.id, riding.head.clone()));
                 }
+                Err(problem) if problem.is_conflict() && !batch.assumed.is_empty() => {
+                    tracing::info!(
+                        pull_request = riding.entry.pull_request,
+                        problem = %problem,
+                        "this does not merge into a tree that only exists because we assumed \
+                         somebody else's work would land, which says nothing about whether it \
+                         merges into the branch, so it is built again once they have"
+                    );
+                    self.github
+                        .delete_branch(tending.who, &tending.name, &branch)
+                        .await?;
+                    return Ok(());
+                }
                 Err(problem) if problem.is_conflict() => {
                     self.let_go_of_what_no_longer_merges(tending, riding)
                         .await?;

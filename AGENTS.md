@@ -93,7 +93,10 @@ These are not style preferences. Breaking one lets a broken commit onto somebody
 - **A candidate that assumed somebody else's work also accuses nobody.** Only a pull request
   verified on the branch's own tip, carrying nothing but itself, has been shown to be at fault.
   A candidate built ahead of the queue that fails is thrown away and built again without the
-  assumption; it is not a verdict, and it does not move how many the queue verifies at once.
+  assumption; it is not a verdict, and it does not move how many the queue verifies at once. The
+  same goes for not merging into it: a tree that only exists because we assumed somebody else's
+  work would land is not the branch, so a conflict with it says nothing about whether the pull
+  request merges and must never settle one.
 - **How many to verify at once is a queue's own business, not the config's.** `batch_size`
   is a ceiling. `queues.verify_at_once` is where the queue actually is, and it starts at 1,
   climbs by one on every pass and halves on every failure. A queue on a flaky repository
