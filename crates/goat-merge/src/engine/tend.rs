@@ -30,6 +30,8 @@ struct Tending {
     required: Vec<String>,
 }
 
+const AT_A_TIME: usize = 4;
+
 struct Riding {
     entry: Entry,
     head: String,
@@ -291,6 +293,19 @@ impl Engine {
         let settings = self.github.repository_settings(who, &name).await?;
         let protection = self.github.protection_of(who, &name, &queue.branch).await?;
 
+        if crate::github::look::allowed_by(&settings, &protection).is_empty() {
+            tracing::warn!(
+                repository = %name,
+                branch = %queue.branch,
+                "github says this repository allows no merge method at all, which it cannot \
+                 mean, so nothing is decided from this read"
+            );
+            self.store
+                .ask_for_later(super::TEND, &super::subject(queue.id), LOOK_AGAIN_IN)
+                .await?;
+            return Ok(());
+        }
+
         let Some(rules) = self.rules_for(who, &name, &queue.branch).await? else {
             return self
                 .tell_everyone_this_branch_is_unmanaged(who, &name, &queue)
@@ -307,19 +322,16 @@ impl Engine {
             queue,
         };
 
+        let running = self.store.running(tending.queue.id).await?;
+        let looked_at = self
+            .look_at_all_of_them(&tending, &running, &settings, &protection)
+            .await?;
+
         let mut seen = Vec::new();
-        for entry in self.store.running(tending.queue.id).await? {
-            let looked = self
-                .github
-                .look_at(
-                    who,
-                    &tending.name,
-                    entry.pull_request,
-                    &tending.base,
-                    &settings,
-                    &protection,
-                )
-                .await?;
+        for (id, looked) in looked_at {
+            let Some(entry) = running.iter().find(|entry| entry.id == id).cloned() else {
+                continue;
+            };
             self.store
                 .remember_title(entry.id, &looked.pull_request.title)
                 .await?;
@@ -426,6 +438,45 @@ impl Engine {
                 .await?;
         }
         Ok(())
+    }
+
+    async fn look_at_all_of_them(
+        &self,
+        tending: &Tending,
+        running: &[Entry],
+        settings: &crate::github::calls::RepositorySettings,
+        protection: &crate::github::calls::Protection,
+    ) -> Result<Vec<(i64, Seen)>, EngineError> {
+        let mut looked = Vec::with_capacity(running.len());
+        for some in running.chunks(AT_A_TIME) {
+            let together = some.iter().map(|entry| {
+                self.github.look_at(
+                    tending.who,
+                    &tending.name,
+                    entry.pull_request,
+                    &tending.base,
+                    settings,
+                    protection,
+                )
+            });
+            for (entry, one) in some
+                .iter()
+                .zip(futures_util::future::join_all(together).await)
+            {
+                match one {
+                    Ok(seen) => looked.push((entry.id, seen)),
+                    Err(problem) if problem.is_missing() => {
+                        tracing::warn!(
+                            pull_request = entry.pull_request,
+                            "github would not show us this pull request, so the rest of the \
+                             queue goes on without it this time"
+                        );
+                    }
+                    Err(problem) => return Err(problem.into()),
+                }
+            }
+        }
+        Ok(looked)
     }
 
     async fn who_travels_together(

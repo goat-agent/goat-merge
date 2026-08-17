@@ -32,24 +32,21 @@ impl Github {
         let pull_request = self.pull_request(who, repository, number).await?;
         let head = pull_request.head.sha.clone();
         let branch = pull_request.base.branch.clone();
-        let approvals = self.approvals_on(who, repository, number, &head).await?;
-
         let from_fork = pull_request.from_a_fork();
-        let fork_workflow_declared_safe = if from_fork {
-            self.fork_workflow_looks_safe(who, repository, &branch)
-                .await?
-        } else {
-            false
-        };
 
-        let required_checks = self
-            .required_checks_on(
-                who,
-                repository,
-                &head,
-                &protection.checks_somebody_else_runs(),
-            )
-            .await?;
+        let wanted = protection.checks_somebody_else_runs();
+        let (approvals, required_checks, fork_workflow_declared_safe) = tokio::try_join!(
+            self.approvals_on(who, repository, number, &head),
+            self.required_checks_on(who, repository, &head, &wanted),
+            async {
+                if from_fork {
+                    self.fork_workflow_looks_safe(who, repository, &branch)
+                        .await
+                } else {
+                    Ok(false)
+                }
+            },
+        )?;
 
         let snapshot = Snapshot {
             number: u64::try_from(number).unwrap_or_default(),
@@ -89,8 +86,10 @@ impl Github {
         if required.is_empty() {
             return Ok(Vec::new());
         }
-        let runs = self.check_runs(who, repository, head).await?;
-        let statuses = self.commit_statuses(who, repository, head).await?;
+        let (runs, statuses) = tokio::try_join!(
+            self.check_runs(who, repository, head),
+            self.commit_statuses(who, repository, head),
+        )?;
 
         Ok(required
             .iter()
