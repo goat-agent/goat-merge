@@ -843,6 +843,18 @@ fn a_queue_that_verifies_one_at_a_time_does_not_speculate() {
          speculative run there is thrown away"
     );
     assert_eq!(how_deep_to_speculate(&rules, 2, 2), 2);
+
+    let never_batches = Queue {
+        batch_size: 1,
+        speculate: 2,
+        ..main_queue()
+    };
+    assert_eq!(
+        how_deep_to_speculate(&never_batches, 2, 1),
+        2,
+        "a queue that was never going to verify more than one at a time is not a queue that \
+         halved its way down to one, and it is telling us nothing about flaky checks"
+    );
 }
 
 #[test]

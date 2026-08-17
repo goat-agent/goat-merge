@@ -62,6 +62,16 @@ pub struct WhatItRode {
     pub attempt: Attempt,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Assumption {
+    pub entry_id: i64,
+    pub pull_request: i32,
+    pub head: String,
+    pub settled_at: Option<OffsetDateTime>,
+    pub merged_sha: Option<String>,
+    pub merged_head: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct StandingOn<'a> {
     pub attempt: &'a Attempt,
@@ -426,9 +436,11 @@ impl Store {
         Ok(attempt)
     }
 
-    pub async fn what_it_assumed(&self, attempt_id: i64) -> Result<Vec<Member>, StoreError> {
-        let assumed = sqlx::query_as::<_, Member>(
-            "select a.entry_id, e.pull_request, a.head from verification_assumptions a \
+    pub async fn what_it_assumed(&self, attempt_id: i64) -> Result<Vec<Assumption>, StoreError> {
+        let assumed = sqlx::query_as::<_, Assumption>(
+            "select a.entry_id, e.pull_request, a.head, \
+                    e.settled_at, e.merged_sha, e.merged_head \
+             from verification_assumptions a \
              join entries e on e.id = a.entry_id \
              where a.verification_id = $1 order by a.place",
         )

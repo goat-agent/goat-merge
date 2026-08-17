@@ -1771,3 +1771,303 @@ async fn a_pull_request_github_has_not_finished_judging_is_looked_at_again_witho
          answers in seconds"
     );
 }
+
+async fn a_queue_speculating_two_deep(world: Arc<World>) -> Option<Standing> {
+    world
+        .files
+        .lock()
+        .expect("files")
+        .entry(".github/merge-queue.yml".to_owned())
+        .or_insert_with(|| {
+            "version: 1\nqueues:\n  - branch: main\n    batch_size: 1\n    speculate: 2\n"
+                .to_owned()
+        });
+    let standing = a_queue_of(world, &[(124, "head-two")], 1).await?;
+    standing
+        .engine
+        .store
+        .speculate_this_deep_next_time(standing.queue_id, 2, "the test asked for it")
+        .await
+        .expect("a depth");
+    Some(standing)
+}
+
+fn two_ready_pull_requests() -> Arc<World> {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2000-01-01T00:00:00Z")]);
+    world.checks_on("head-two", vec![passing("test", "2000-01-01T00:00:00Z")]);
+    world
+}
+
+#[tokio::test]
+async fn the_next_candidate_is_verified_before_the_one_ahead_has_landed() {
+    let world = two_ready_pull_requests();
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the first tend builds the front candidate");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the second tend builds one on top of it");
+
+    let live = standing
+        .engine
+        .store
+        .live_attempts_on(standing.queue_id)
+        .await
+        .expect("the live attempts");
+    assert_eq!(
+        live.len(),
+        2,
+        "the second candidate's checks should be running while the first one's still are"
+    );
+    assert_eq!(live[0].depth, 0);
+    assert_eq!(live[1].depth, 1);
+    assert_eq!(live[1].built_on, Some(live[0].id));
+    assert_eq!(
+        live[1].base,
+        live[0].candidate_sha.clone().unwrap_or_default(),
+        "the one behind is verified on top of the tree the one in front would land"
+    );
+    assert!(
+        standing.world.merged_pull_requests().is_empty(),
+        "nothing has passed yet"
+    );
+}
+
+#[tokio::test]
+async fn a_candidate_verified_ahead_of_the_queue_merges_once_the_one_in_front_lands() {
+    let world = two_ready_pull_requests();
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front candidate");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the one on top of it");
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front merges");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the one behind merges on the strength of what it already ran");
+
+    assert_eq!(
+        standing
+            .world
+            .merged_pull_requests()
+            .iter()
+            .map(|(number, _, _)| *number)
+            .collect::<Vec<_>>(),
+        vec![123, 124],
+        "both should land, in order, without the second one being verified again"
+    );
+    assert_eq!(
+        standing.world.draft_pull_requests().len(),
+        2,
+        "two pull requests landed on two candidate runs, not three"
+    );
+}
+
+#[tokio::test]
+async fn a_candidate_built_on_one_that_failed_is_thrown_away_and_accuses_nobody() {
+    let world = two_ready_pull_requests();
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front candidate");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the one on top of it");
+    let before = standing
+        .engine
+        .store
+        .queue_by_id(standing.queue_id)
+        .await
+        .expect("the queue")
+        .expect("a queue")
+        .verify_at_once;
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![failing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![failing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front fails");
+
+    let behind = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 124)
+        .await
+        .expect("the entry")
+        .expect("the one behind");
+    assert!(
+        behind.settled_at.is_none(),
+        "the failure may belong to the work it assumed, so it has not been shown to be at fault"
+    );
+    assert!(
+        standing
+            .engine
+            .store
+            .live_attempts_on(standing.queue_id)
+            .await
+            .expect("the live attempts")
+            .is_empty(),
+        "a result about a tree nobody will build is thrown away, not kept"
+    );
+    let after = standing
+        .engine
+        .store
+        .queue_by_id(standing.queue_id)
+        .await
+        .expect("the queue")
+        .expect("a queue");
+    assert_eq!(
+        after.verify_at_once, before,
+        "how many the queue verifies together is about candidates on the branch's own tip, and \
+         a speculative failure says nothing about it"
+    );
+    assert_eq!(
+        after.speculate_to, 1,
+        "a chain that was thrown away without being used makes the queue speculate less"
+    );
+}
+
+#[tokio::test]
+async fn a_candidate_does_not_merge_when_something_else_landed_on_the_base_first() {
+    let world = two_ready_pull_requests();
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front candidate");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the one on top of it");
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front merges");
+    standing.world.move_the_base_to("somebody-pushed-by-hand");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend that finds the base somewhere else");
+
+    assert_eq!(
+        standing
+            .world
+            .merged_pull_requests()
+            .iter()
+            .map(|(number, _, _)| *number)
+            .collect::<Vec<_>>(),
+        vec![123],
+        "the tree it was verified on top of is not the tree that is there now"
+    );
+    let behind = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 124)
+        .await
+        .expect("the entry")
+        .expect("the one behind");
+    assert!(behind.settled_at.is_none());
+}
+
+#[tokio::test]
+async fn a_queue_that_halved_its_way_down_to_one_builds_nothing_ahead_of_itself() {
+    let world = two_ready_pull_requests();
+    world.files.lock().expect("files").insert(
+        ".github/merge-queue.yml".to_owned(),
+        "version: 1\nqueues:\n  - branch: main\n    batch_size: 3\n    speculate: 2\n".to_owned(),
+    );
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+    standing
+        .engine
+        .store
+        .verify_this_many_next_time(standing.queue_id, 1, "the checks here are flaky")
+        .await
+        .expect("a width");
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front candidate");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend that must not build ahead");
+
+    assert_eq!(
+        standing
+            .engine
+            .store
+            .live_attempts_on(standing.queue_id)
+            .await
+            .expect("the live attempts")
+            .len(),
+        1,
+        "a queue that halved its way down to one is telling us its checks are flaky, and every \
+         run it makes ahead of itself there is thrown away"
+    );
+}

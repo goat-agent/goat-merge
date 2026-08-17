@@ -1,8 +1,8 @@
 use goat_merge_core::config::{self, Config};
 use goat_merge_core::{
-    Aboard, CHECK_NAME, Conclusion, Enqueue, InQueue, MergeMethod, Next, NotQueued,
-    Queue as QueueRules, Readiness, Sha, Status, Verification, WhyFailed, after_a_batch, assess,
-    decide, how_many_to_verify,
+    Aboard, Assumed, CHECK_NAME, Conclusion, Enqueue, HowItWent, InQueue, MergeMethod, Next,
+    NotQueued, Queue as QueueRules, Readiness, Sha, Status, Verification, WhyFailed, after_a_batch,
+    after_a_chain, assess, decide, how_deep_to_speculate, how_many_to_verify,
 };
 use time::{Duration, OffsetDateTime};
 
@@ -11,7 +11,7 @@ use crate::github::calls::WhatTheCheckSays;
 use crate::github::look::{Seen, WhereTheBaseIs};
 use crate::github::{As, GithubError};
 use crate::store::audit::US;
-use crate::store::queue::{Attempt, Entry, Queue};
+use crate::store::queue::{Attempt, Entry, Queue, StandingOn};
 use crate::store::repositories::Repository;
 
 pub(crate) struct WhatTheCheckIsAbout<'a> {
@@ -42,10 +42,40 @@ struct Riding {
     changed: bool,
 }
 
+struct Link {
+    attempt: Option<(Attempt, Verification)>,
+    travelling: Vec<i64>,
+    aboard: Vec<Aboard>,
+    assuming: Vec<Aboard>,
+    assumed: Vec<(i64, String)>,
+    onto: Sha,
+    standing_on: Option<Attempt>,
+}
+
 struct TheBatch {
     riding: Vec<Riding>,
     attempt: Option<Attempt>,
     next: Next,
+    assuming: Vec<Aboard>,
+    assumed: Vec<(i64, String)>,
+    standing_on: Option<Attempt>,
+}
+
+impl Link {
+    fn riders(&self) -> Vec<(i64, String)> {
+        self.travelling
+            .iter()
+            .zip(&self.aboard)
+            .map(|(id, one)| (*id, one.head.to_string()))
+            .collect()
+    }
+}
+
+fn what_it_stands_on(below: Option<&Link>, tip: &str) -> Sha {
+    match below.and_then(|link| link.attempt.as_ref()) {
+        Some((attempt, _)) => Sha::from(attempt.candidate_sha.clone().unwrap_or_default()),
+        None => Sha::from(tip.to_owned()),
+    }
 }
 
 impl Riding {
@@ -94,16 +124,34 @@ fn what_to_call_the_draft(riding: &[&Riding]) -> String {
     }
 }
 
-fn what_the_draft_explains(riding: &[&Riding], branch: &str) -> String {
+fn what_the_draft_explains(riding: &[&Riding], branch: &str, assuming: &[Aboard]) -> String {
     let listed = riding
         .iter()
         .map(|one| format!("- #{} {}", one.entry.pull_request, one.title))
         .collect::<Vec<_>>()
         .join("\n");
+    let on_top_of = match assuming {
+        [] => format!("`{branch}`"),
+        many => format!(
+            "`{branch}` with {} assumed to land first",
+            many.iter()
+                .map(|one| format!("#{}", one.number))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let if_it_does_not = if assuming.is_empty() {
+        String::new()
+    } else {
+        " If any of those does not land exactly as assumed, this is thrown away and nothing is \
+         merged from it."
+            .to_owned()
+    };
     format!(
-        "Verifying these on top of `{branch}`, in this order:\n\n{listed}\n\nThis pull request \
-         only exists to run the repository's checks and is closed automatically. If it fails, \
-         fewer will be verified together next time until the one at fault is found."
+        "Verifying these on top of {on_top_of}, in this order:\n\n{listed}\n\nThis pull \
+         request only exists to run the repository's checks and is closed automatically. If it \
+         fails, fewer will be verified together next time until the one at fault is \
+         found.{if_it_does_not}"
     )
 }
 
@@ -375,47 +423,42 @@ impl Engine {
             .map(|entry| entry.id)
             .collect();
 
-        let live = match self
-            .store
-            .live_attempts_on(tending.queue.id)
-            .await?
-            .into_iter()
-            .next()
-        {
-            Some(attempt) => Some(self.catch_up_on(&tending, attempt).await?),
-            None => None,
-        };
-        let travelling = self.who_travels_together(&tending, &live, &ready).await?;
-        let Some(travelling) = travelling else {
-            return Ok(());
-        };
-        let aboard: Vec<Aboard> = travelling
-            .iter()
-            .filter_map(|id| seen.iter().find(|(seen_id, _)| seen_id == id))
-            .map(|(_, looked)| Aboard {
-                number: looked.snapshot.number,
-                head: looked.snapshot.head.clone(),
-            })
-            .collect();
+        let tip = Sha::from(tending.base.sha.clone());
+        let links = self.the_chain_as_it_stands(&tending, &ready, &seen).await?;
 
         let mut anything_in_flight = false;
-        let mut riding = Vec::new();
         let mut looking_on = Vec::new();
-        let mut next = Next::Nothing;
+        let mut batches: Vec<TheBatch> = links
+            .iter()
+            .map(|link| TheBatch {
+                riding: Vec::new(),
+                attempt: link.attempt.as_ref().map(|(attempt, _)| attempt.clone()),
+                next: Next::Nothing,
+                assuming: link.assuming.clone(),
+                assumed: link.assumed.clone(),
+                standing_on: link.standing_on.clone(),
+            })
+            .collect();
         for entry in entries {
             let Some((_, looked)) = seen.iter().find(|(id, _)| *id == entry.id) else {
                 continue;
             };
+            let riding_in = links
+                .iter()
+                .position(|link| link.travelling.contains(&entry.id));
+            let link = riding_in.map(|at| &links[at]);
             let decision = decide(
                 &looked.snapshot,
                 &tending.rules,
                 &InQueue {
                     ahead: ready.iter().position(|id| *id == entry.id).unwrap_or(0),
-                    aboard: &aboard,
-                    assuming: &[],
-                    onto: &looked.snapshot.base.sha,
+                    aboard: link.map_or(&[][..], |link| &link.aboard),
+                    assuming: link.map_or(&[][..], |link| &link.assuming),
+                    onto: link.map_or(&tip, |link| &link.onto),
                     paused: tending.queue.paused,
-                    verification: live.as_ref().map(|(_, seen)| seen),
+                    verification: link
+                        .and_then(|link| link.attempt.as_ref())
+                        .map(|(_, seen)| seen),
                 },
             );
             anything_in_flight |= matches!(
@@ -437,25 +480,26 @@ impl Engine {
                 status: decision.status,
                 changed,
             };
-            if !travelling.contains(&standing.entry.id) {
-                looking_on.push(standing);
-                continue;
+            match riding_in {
+                Some(at) => {
+                    if batches[at].riding.is_empty() {
+                        batches[at].next = decision.next;
+                    }
+                    batches[at].riding.push(standing);
+                }
+                None => looking_on.push(standing),
             }
-            if riding.is_empty() {
-                next = decision.next;
-            }
-            riding.push(standing);
         }
 
         self.say_where_they_all_stand(&tending, &looking_on).await?;
 
-        if !riding.is_empty() {
-            let batch = TheBatch {
-                riding,
-                attempt: live.map(|(attempt, _)| attempt),
-                next,
-            };
-            self.act_on_the_batch(&tending, batch).await?;
+        for batch in batches {
+            if batch.riding.is_empty() {
+                continue;
+            }
+            if self.act_on_the_batch(&tending, batch).await? {
+                break;
+            }
         }
 
         if anything_in_flight {
@@ -540,37 +584,132 @@ impl Engine {
         Ok(looked)
     }
 
-    async fn who_travels_together(
+    async fn the_chain_as_it_stands(
         &self,
         tending: &Tending,
-        live: &Option<(Attempt, Verification)>,
         ready: &[i64],
-    ) -> Result<Option<Vec<i64>>, EngineError> {
-        let Some((attempt, _)) = live else {
-            let how_many = how_many_to_verify(
-                &tending.rules,
-                usize::try_from(tending.queue.verify_at_once).unwrap_or(1),
-                ready.len(),
-            );
-            return Ok(Some(ready.iter().take(how_many).copied().collect()));
+        seen: &[(i64, Seen)],
+    ) -> Result<Vec<Link>, EngineError> {
+        let carried = |travelling: &[i64]| -> Vec<Aboard> {
+            travelling
+                .iter()
+                .filter_map(|id| seen.iter().find(|(seen_id, _)| seen_id == id))
+                .map(|(_, looked)| Aboard {
+                    number: looked.snapshot.number,
+                    head: looked.snapshot.head.clone(),
+                })
+                .collect()
         };
-        let still_here: Vec<i64> = self
-            .store
-            .everyone_aboard(attempt.id)
-            .await?
-            .into_iter()
-            .map(|member| member.entry_id)
-            .filter(|id| ready.contains(id))
-            .collect();
-        if still_here.is_empty() {
-            self.tidy_away(tending, attempt, "everyone it was verifying left the queue")
+
+        let mut links: Vec<Link> = Vec::new();
+        let mut spoken_for: Vec<i64> = Vec::new();
+        for attempt in self.store.live_attempts_on(tending.queue.id).await? {
+            let still_here: Vec<i64> = self
+                .store
+                .everyone_aboard(attempt.id)
+                .await?
+                .into_iter()
+                .map(|member| member.entry_id)
+                .filter(|id| ready.contains(id) && !spoken_for.contains(id))
+                .collect();
+            if still_here.is_empty() {
+                self.throw_away_this_and_everything_on_it(
+                    tending,
+                    &attempt,
+                    "everyone it was verifying left the queue",
+                )
                 .await?;
-            self.store
-                .ask_for(super::TEND, &super::subject(tending.queue.id))
-                .await?;
-            return Ok(None);
+                self.store
+                    .ask_for(super::TEND, &super::subject(tending.queue.id))
+                    .await?;
+                break;
+            }
+            spoken_for.extend(still_here.iter().copied());
+            let standing_on = links.last().and_then(|below: &Link| {
+                below.attempt.as_ref().map(|(attempt, _)| attempt.clone())
+            });
+            let assumed: Vec<(i64, String)> = self
+                .store
+                .what_it_assumed(attempt.id)
+                .await?
+                .into_iter()
+                .map(|one| (one.entry_id, one.head))
+                .collect();
+            let onto = if assumed.is_empty() {
+                Sha::from(tending.base.sha.clone())
+            } else {
+                Sha::from(attempt.base.clone())
+            };
+            let aboard = carried(&still_here);
+            let caught_up = self.catch_up_on(tending, attempt).await?;
+            links.push(Link {
+                travelling: still_here,
+                assuming: caught_up
+                    .1
+                    .assumed
+                    .iter()
+                    .map(|one| Aboard {
+                        number: one.number,
+                        head: one.head.clone(),
+                    })
+                    .collect(),
+                attempt: Some(caught_up),
+                assumed,
+                onto,
+                standing_on,
+                aboard,
+            });
         }
-        Ok(Some(still_here))
+
+        let left_over: Vec<i64> = ready
+            .iter()
+            .copied()
+            .filter(|id| !spoken_for.contains(id))
+            .collect();
+        if left_over.is_empty() || !self.room_for_one_more(tending, &links) {
+            return Ok(links);
+        }
+        let how_many = how_many_to_verify(
+            &tending.rules,
+            usize::try_from(tending.queue.verify_at_once).unwrap_or(1),
+            left_over.len(),
+        );
+        let travelling: Vec<i64> = left_over.into_iter().take(how_many).collect();
+        let standing_on = links
+            .last()
+            .and_then(|below| below.attempt.as_ref().map(|(attempt, _)| attempt.clone()));
+        let aboard = carried(&travelling);
+        links.push(Link {
+            attempt: None,
+            travelling,
+            assuming: links
+                .iter()
+                .flat_map(|below| below.aboard.clone())
+                .collect(),
+            assumed: links.iter().flat_map(|below| below.riders()).collect(),
+            onto: what_it_stands_on(links.last(), &tending.base.sha),
+            standing_on,
+            aboard,
+        });
+        Ok(links)
+    }
+
+    fn room_for_one_more(&self, tending: &Tending, links: &[Link]) -> bool {
+        let deepest = match links.last() {
+            None => return true,
+            Some(link) => link,
+        };
+        let how_deep = how_deep_to_speculate(
+            &tending.rules,
+            usize::try_from(tending.queue.speculate_to).unwrap_or(1),
+            usize::try_from(tending.queue.verify_at_once).unwrap_or(1),
+        );
+        if links.len() >= how_deep {
+            return false;
+        }
+        deepest.attempt.as_ref().is_some_and(|(attempt, seen)| {
+            attempt.candidate_sha.is_some() && seen.conclusion == Conclusion::Pending
+        })
     }
 
     async fn say_where_they_all_stand(
@@ -749,6 +888,24 @@ impl Engine {
                 head: Sha::from(member.head),
             })
             .collect();
+        let assumed: Vec<Assumed> = self
+            .store
+            .what_it_assumed(attempt.id)
+            .await?
+            .into_iter()
+            .map(|one| Assumed {
+                number: u64::try_from(one.pull_request).unwrap_or_default(),
+                head: Sha::from(one.head),
+                went: match (one.settled_at, one.merged_sha, one.merged_head) {
+                    (None, _, _) => HowItWent::StillGoing,
+                    (Some(_), Some(at), Some(head)) => HowItWent::Landed {
+                        at: Sha::from(at),
+                        head: Sha::from(head),
+                    },
+                    _ => HowItWent::GoneFromTheQueue,
+                },
+            })
+            .collect();
         let mut attempt = attempt;
         if attempt.conclusion == "pending" && attempt.candidate_sha.is_none() {
             let stalled = OffsetDateTime::now_utc() - attempt.started_at > NEVER_GOT_GOING;
@@ -801,7 +958,7 @@ impl Engine {
                     .await?;
                 attempt.conclusion = "timed_out".to_owned();
             }
-            if attempt.conclusion != "pending" {
+            if attempt.conclusion != "pending" && assumed.is_empty() {
                 let passed = attempt.conclusion == "success";
                 let now = usize::try_from(tending.queue.verify_at_once).unwrap_or(1);
                 let next = after_a_batch(now, aboard.len(), &tending.rules, passed);
@@ -817,7 +974,7 @@ impl Engine {
         let verification = Verification {
             base: Sha::from(attempt.base.clone()),
             aboard,
-            assumed: Vec::new(),
+            assumed,
             candidate: Sha::from(attempt.candidate_sha.clone().unwrap_or_default()),
             conclusion: match attempt.conclusion.as_str() {
                 "success" => Conclusion::Success,
@@ -834,13 +991,15 @@ impl Engine {
         &self,
         tending: &Tending,
         batch: TheBatch,
-    ) -> Result<(), EngineError> {
+    ) -> Result<bool, EngineError> {
+        let mut the_world_moved = !matches!(batch.next, Next::Nothing);
         match &batch.next {
             Next::Nothing => {
                 for riding in &batch.riding {
                     if matches!(riding.status, Status::Failed(_)) {
                         self.give_up(tending, riding, batch.attempt.as_ref())
                             .await?;
+                        the_world_moved = true;
                     } else {
                         self.tell_them_where_they_stand(tending, riding).await?;
                     }
@@ -857,13 +1016,17 @@ impl Engine {
             }
             Next::DiscardVerification => {
                 if let Some(attempt) = &batch.attempt {
-                    let narrowing = matches!(attempt.conclusion.as_str(), "failure" | "timed_out");
+                    let narrowing = matches!(attempt.conclusion.as_str(), "failure" | "timed_out")
+                        && batch.assumed.is_empty();
                     let because = if narrowing {
                         "the checks failed, so fewer will be verified together next time"
+                    } else if !batch.assumed.is_empty() {
+                        "what it was built on did not land as it assumed"
                     } else {
                         "the base or a head moved"
                     };
-                    self.tidy_away(tending, attempt, because).await?;
+                    self.throw_away_this_and_everything_on_it(tending, attempt, because)
+                        .await?;
                     if narrowing {
                         self.say_the_batch_is_being_narrowed(tending, &batch)
                             .await?;
@@ -884,7 +1047,36 @@ impl Engine {
         if batch.riding.iter().any(|riding| riding.changed) {
             self.announce(&tending.name);
         }
-        Ok(())
+        Ok(the_world_moved)
+    }
+
+    async fn throw_away_this_and_everything_on_it(
+        &self,
+        tending: &Tending,
+        attempt: &Attempt,
+        because: &str,
+    ) -> Result<(), EngineError> {
+        for standing_on_it in self.store.everything_built_on(attempt.id).await? {
+            if standing_on_it.discarded_because.is_some() {
+                continue;
+            }
+            self.tidy_away(
+                tending,
+                &standing_on_it,
+                "what it was built on was thrown away, so its result is about a tree nobody \
+                 will build",
+            )
+            .await?;
+            let now = usize::try_from(tending.queue.speculate_to).unwrap_or(1);
+            self.store
+                .speculate_this_deep_next_time(
+                    tending.queue.id,
+                    after_a_chain(now, &tending.rules, true),
+                    "a candidate built ahead of the queue was thrown away without being used",
+                )
+                .await?;
+        }
+        self.tidy_away(tending, attempt, because).await
     }
 
     async fn say_the_batch_is_being_narrowed(
@@ -1001,7 +1193,9 @@ impl Engine {
             return Ok(());
         }
 
-        let narrowed_from = self.what_this_narrows(tending, carried.len()).await?;
+        let narrowed_from = self
+            .what_this_narrows(tending, carried.len(), &batch.assumed)
+            .await?;
         let attempt = self
             .store
             .open_attempt(
@@ -1010,7 +1204,10 @@ impl Engine {
                 &branch,
                 &carried,
                 narrowed_from,
-                None,
+                batch.standing_on.as_ref().map(|below| StandingOn {
+                    attempt: below,
+                    assumed: &batch.assumed,
+                }),
             )
             .await?;
         let riding_on_it: Vec<&Riding> = batch
@@ -1026,7 +1223,7 @@ impl Engine {
                 &what_to_call_the_draft(&riding_on_it),
                 &branch,
                 &tending.queue.branch,
-                &what_the_draft_explains(&riding_on_it, &tending.queue.branch),
+                &what_the_draft_explains(&riding_on_it, &tending.queue.branch, &batch.assuming),
             )
             .await?;
         self.store
@@ -1050,10 +1247,12 @@ impl Engine {
         &self,
         tending: &Tending,
         size: usize,
+        assumed: &[(i64, String)],
     ) -> Result<Option<i64>, EngineError> {
+        let same_lineage: Vec<i64> = assumed.iter().map(|(id, _)| *id).collect();
         let Some(before) = self
             .store
-            .what_last_failed_assuming(tending.queue.id, &[])
+            .what_last_failed_assuming(tending.queue.id, &same_lineage)
             .await?
         else {
             return Ok(None);
@@ -1111,6 +1310,16 @@ impl Engine {
                 refused = Some(riding);
                 break;
             }
+        }
+        if refused.is_none() && !batch.assumed.is_empty() {
+            let now = usize::try_from(tending.queue.speculate_to).unwrap_or(1);
+            self.store
+                .speculate_this_deep_next_time(
+                    tending.queue.id,
+                    after_a_chain(now, &tending.rules, false),
+                    "a candidate verified ahead of the queue landed on the tree it assumed",
+                )
+                .await?;
         }
         if let Some(attempt) = &batch.attempt {
             let because = if refused.is_some() {
@@ -1270,8 +1479,12 @@ impl Engine {
             )
             .await?;
         if let Some(attempt) = attempt {
-            self.tidy_away(tending, attempt, "the pull request left the queue")
-                .await?;
+            self.throw_away_this_and_everything_on_it(
+                tending,
+                attempt,
+                "the pull request left the queue",
+            )
+            .await?;
         }
         self.store
             .write_down(

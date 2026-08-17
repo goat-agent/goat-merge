@@ -223,7 +223,7 @@ pub fn after_a_batch(now: usize, size: usize, rules: &Queue, passed: bool) -> us
 }
 
 pub fn how_deep_to_speculate(rules: &Queue, now: usize, verifying_at_once: usize) -> usize {
-    if verifying_at_once <= 1 {
+    if verifying_at_once <= 1 && rules.most_it_will_verify_at_once() > 1 {
         return 1;
     }
     now.clamp(1, rules.most_it_will_speculate())
