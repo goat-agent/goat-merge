@@ -1597,3 +1597,38 @@ async fn a_verification_that_never_got_a_candidate_does_not_hold_the_queue_forev
          live blocks every pull request behind it for good"
     );
 }
+
+#[tokio::test]
+async fn putting_the_label_back_on_gets_a_pull_request_in_again_without_a_webhook() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2099-01-01T00:00:00Z")]);
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+    let entry = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 123)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    standing
+        .engine
+        .store
+        .settle(entry.id, "Cancelled", "somebody took it out", None)
+        .await
+        .expect("a settled entry, label still on because the person put it back");
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend");
+
+    assert_eq!(
+        standing.world.merged_pull_requests(),
+        vec![(123, "squash".to_owned(), "head-one".to_owned())],
+        "every way out of the queue takes the label off, so a label that is on again is \
+         somebody asking to go back in"
+    );
+}
