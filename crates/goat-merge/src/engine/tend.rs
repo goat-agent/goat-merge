@@ -700,13 +700,17 @@ impl Engine {
             }
             Next::DiscardVerification => {
                 if let Some(attempt) = &batch.attempt {
-                    let because = match attempt.conclusion.as_str() {
-                        "failure" | "timed_out" => {
-                            "the checks failed, so fewer will be verified together next time"
-                        }
-                        _ => "the base or a head moved",
+                    let narrowing = matches!(attempt.conclusion.as_str(), "failure" | "timed_out");
+                    let because = if narrowing {
+                        "the checks failed, so fewer will be verified together next time"
+                    } else {
+                        "the base or a head moved"
                     };
                     self.tidy_away(tending, attempt, because).await?;
+                    if narrowing {
+                        self.say_the_batch_is_being_narrowed(tending, &batch)
+                            .await?;
+                    }
                 }
                 for riding in &batch.riding {
                     self.tell_them_where_they_stand(tending, riding).await?;
@@ -722,6 +726,42 @@ impl Engine {
 
         if batch.riding.iter().any(|riding| riding.changed) {
             self.announce(&tending.name);
+        }
+        Ok(())
+    }
+
+    async fn say_the_batch_is_being_narrowed(
+        &self,
+        tending: &Tending,
+        batch: &TheBatch,
+    ) -> Result<(), EngineError> {
+        if batch.riding.len() < 2 {
+            return Ok(());
+        }
+        let together = batch
+            .riding
+            .iter()
+            .map(|riding| format!("#{}", riding.entry.pull_request))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let now = self
+            .store
+            .queue_by_id(tending.queue.id)
+            .await?
+            .map_or(1, |queue| queue.verify_at_once);
+        for riding in &batch.riding {
+            self.store
+                .write_down(
+                    US,
+                    "verified together and failed",
+                    Some(tending.repository.id),
+                    Some(riding.entry.pull_request),
+                    &format!(
+                        "{together} failed on one candidate, so none of them is the one at \
+                         fault yet. The queue will verify {now} at a time until it finds out."
+                    ),
+                )
+                .await?;
         }
         Ok(())
     }
