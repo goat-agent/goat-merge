@@ -652,6 +652,7 @@ impl Engine {
                     .verify_this_many_next_time(
                         tending.queue.id,
                         after_a_batch(
+                            usize::try_from(tending.queue.verify_at_once).unwrap_or(1),
                             aboard.len(),
                             &tending.rules,
                             attempt.conclusion == "success",

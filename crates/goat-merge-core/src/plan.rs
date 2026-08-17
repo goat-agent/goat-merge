@@ -126,9 +126,10 @@ pub fn how_many_to_verify(rules: &Queue, now: usize, ready: usize) -> usize {
     now.clamp(1, rules.most_it_will_verify_at_once()).min(ready)
 }
 
-pub fn after_a_batch(size: usize, rules: &Queue, passed: bool) -> usize {
+pub fn after_a_batch(now: usize, size: usize, rules: &Queue, passed: bool) -> usize {
     if passed {
         size.saturating_add(1)
+            .max(now)
             .min(rules.most_it_will_verify_at_once())
     } else {
         (size / 2).max(1)

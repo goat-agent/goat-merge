@@ -557,15 +557,25 @@ fn a_batch_grows_by_one_when_it_passes_and_halves_when_it_fails() {
         ..main_queue()
     };
 
-    assert_eq!(after_a_batch(1, &rules, true), 2);
-    assert_eq!(after_a_batch(4, &rules, true), 5);
-    assert_eq!(after_a_batch(8, &rules, true), 8, "never past the ceiling");
-    assert_eq!(after_a_batch(8, &rules, false), 4);
-    assert_eq!(after_a_batch(2, &rules, false), 1);
+    assert_eq!(after_a_batch(1, 1, &rules, true), 2);
+    assert_eq!(after_a_batch(4, 4, &rules, true), 5);
     assert_eq!(
-        after_a_batch(1, &rules, false),
+        after_a_batch(8, 8, &rules, true),
+        8,
+        "never past the ceiling"
+    );
+    assert_eq!(after_a_batch(8, 8, &rules, false), 4);
+    assert_eq!(after_a_batch(2, 2, &rules, false), 1);
+    assert_eq!(
+        after_a_batch(1, 1, &rules, false),
         1,
         "one that failed on its own has nowhere smaller to go"
+    );
+    assert_eq!(
+        after_a_batch(4, 1, &rules, true),
+        4,
+        "a batch of one because only one was ready proves nothing against four, so the queue \
+         keeps what it had rather than forgetting it"
     );
 }
 
@@ -594,5 +604,5 @@ fn turning_batching_off_leaves_one_at_a_time() {
     };
 
     assert_eq!(how_many_to_verify(&rules, 9, 9), 1);
-    assert_eq!(after_a_batch(1, &rules, true), 1);
+    assert_eq!(after_a_batch(1, 1, &rules, true), 1);
 }
