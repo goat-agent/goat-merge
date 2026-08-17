@@ -74,14 +74,14 @@ export function DetailPanel({
         {(said) =>
           said === null ? null : (
             <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
+              <div className="space-y-1">
+                <p className="font-mono text-mono text-ink-faint">#{said.entry.pull_request}</p>
+                <h2 className="text-heading text-ink">{said.entry.title || "untitled"}</h2>
+                <p className="text-ui text-ink-faint">asked by {said.entry.requested_by}</p>
+              </div>
+
               {tab === "detail" ? (
                 <>
-                  <div className="space-y-1">
-                    <p className="font-mono text-mono text-ink-faint">#{said.entry.pull_request}</p>
-                    <h2 className="text-heading text-ink">{said.entry.title || "untitled"}</h2>
-                    <p className="text-ui text-ink-faint">asked by {said.entry.requested_by}</p>
-                  </div>
-
                   <Well>
                     <Standing status={said.entry.status} />
                     <p className="text-ui">{said.entry.detail}</p>
@@ -116,9 +116,14 @@ export function DetailPanel({
                   {said.timeline.length === 0 ? <Empty>Nothing has happened yet.</Empty> : null}
                   {said.timeline.map((note) => (
                     <li key={`${note.at}-${note.action}`} className="text-ui">
-                      <p>
-                        <span className="text-ink">{note.actor}</span>{" "}
-                        <span className="text-ink-faint">{note.action}</span>
+                      <p className="flex items-baseline justify-between gap-3">
+                        <span className="min-w-0">
+                          <span className="text-ink">{note.actor}</span>{" "}
+                          <span className="text-ink-faint">{note.action}</span>
+                        </span>
+                        <span className="shrink-0 tabular-nums text-ink-faint">
+                          {ago(note.at)} ago
+                        </span>
                       </p>
                       {note.detail ? <p className="text-ink-faint">{note.detail}</p> : null}
                     </li>

@@ -377,7 +377,7 @@ pub async fn one_pull(
         "entry": row(entry, live),
         "attempts": attempts,
         "timeline": notes.into_iter().map(|note| json!({
-            "at": note.at.to_string(),
+            "at": note.at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
             "actor": note.actor,
             "action": note.action,
             "detail": note.detail,
