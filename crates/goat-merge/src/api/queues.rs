@@ -40,6 +40,9 @@ pub struct Trial {
     pub id: i64,
     pub base: String,
     pub aboard: Vec<i32>,
+    pub assuming: Vec<i32>,
+    pub depth: i32,
+    pub built_on: Option<i64>,
     pub narrowed_from: Option<i64>,
     pub discarded_because: Option<String>,
     pub candidate_branch: String,
@@ -54,11 +57,14 @@ pub struct Trial {
 }
 
 impl Trial {
-    fn of(attempt: Attempt, aboard: Vec<Member>) -> Self {
+    fn of(attempt: Attempt, aboard: Vec<Member>, assuming: Vec<i32>) -> Self {
         Self {
             id: attempt.id,
             base: attempt.base,
             aboard: aboard.into_iter().map(|one| one.pull_request).collect(),
+            assuming,
+            depth: attempt.depth,
+            built_on: attempt.built_on,
             narrowed_from: attempt.narrowed_from,
             discarded_because: attempt.discarded_because,
             candidate_branch: attempt.candidate_branch,
@@ -77,22 +83,39 @@ async fn what_it_rode(engine: &Engine, entry_id: i64) -> Result<Option<Trial>, F
         return Ok(None);
     };
     let aboard = engine.store.everyone_aboard(attempt.id).await?;
-    Ok(Some(Trial::of(attempt, aboard)))
+    let assuming = what_it_assumed(engine, attempt.id).await?;
+    Ok(Some(Trial::of(attempt, aboard, assuming)))
+}
+
+async fn what_it_assumed(engine: &Engine, attempt_id: i64) -> Result<Vec<i32>, Fault> {
+    Ok(engine
+        .store
+        .what_it_assumed(attempt_id)
+        .await?
+        .into_iter()
+        .map(|one| one.pull_request)
+        .collect())
 }
 
 async fn what_they_rode(engine: &Engine, entries: Vec<Entry>) -> Result<Vec<Row>, Fault> {
     let ids: Vec<i64> = entries.iter().map(|entry| entry.id).collect();
     let rode = engine.store.what_each_of_them_last_rode(&ids).await?;
     let mut aboard = std::collections::HashMap::new();
+    let mut assuming = std::collections::HashMap::new();
     for one in &rode {
         if let std::collections::hash_map::Entry::Vacant(empty) = aboard.entry(one.attempt.id) {
             empty.insert(engine.store.everyone_aboard(one.attempt.id).await?);
+            assuming.insert(
+                one.attempt.id,
+                what_it_assumed(engine, one.attempt.id).await?,
+            );
         }
     }
     let mut riders = std::collections::HashMap::new();
     for one in rode {
         let riding = aboard.get(&one.attempt.id).cloned().unwrap_or_default();
-        riders.insert(one.entry_id, Trial::of(one.attempt, riding));
+        let assumed = assuming.get(&one.attempt.id).cloned().unwrap_or_default();
+        riders.insert(one.entry_id, Trial::of(one.attempt, riding, assumed));
     }
     Ok(entries
         .into_iter()
@@ -263,6 +286,8 @@ pub async fn one_queue(
         "base_sha": queue.base_sha,
         "verify_at_once": queue.verify_at_once,
         "verify_at_once_because": queue.verify_at_once_because,
+        "speculate_to": queue.speculate_to,
+        "speculate_to_because": queue.speculate_to_because,
         "entries": rows,
     }))
     .into_response())
@@ -366,7 +391,8 @@ pub async fn one_pull(
     let mut attempts = Vec::new();
     for attempt in engine.store.attempts_carrying(entry.id).await? {
         let aboard = engine.store.everyone_aboard(attempt.id).await?;
-        attempts.push(Trial::of(attempt, aboard));
+        let assuming = what_it_assumed(&engine, attempt.id).await?;
+        attempts.push(Trial::of(attempt, aboard, assuming));
     }
     let notes = engine
         .store

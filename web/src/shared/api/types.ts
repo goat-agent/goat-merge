@@ -30,6 +30,9 @@ export type Trial = {
   id: number;
   base: string;
   aboard: number[];
+  assuming: number[];
+  depth: number;
+  built_on: number | null;
   narrowed_from: number | null;
   discarded_because: string | null;
   candidate_branch: string;
@@ -45,6 +48,9 @@ export const readsAsATrial: Read<Trial> = shape((given) => ({
   id: need(whole, given.id),
   base: need(text, given.base),
   aboard: need(list(whole), given.aboard),
+  assuming: need(list(whole), given.assuming),
+  depth: need(whole, given.depth),
+  built_on: need(maybe(whole), given.built_on),
   narrowed_from: need(maybe(whole), given.narrowed_from),
   discarded_because: need(maybe(text), given.discarded_because),
   candidate_branch: need(text, given.candidate_branch),
@@ -95,6 +101,8 @@ export type QueueView = {
   base_sha: string | null;
   verify_at_once: number;
   verify_at_once_because: string | null;
+  speculate_to: number;
+  speculate_to_because: string | null;
   entries: Row[];
 };
 
@@ -107,6 +115,8 @@ export const readsAsAQueue: Read<QueueView> = shape((given) => ({
   base_sha: need(maybe(text), given.base_sha),
   verify_at_once: need(whole, given.verify_at_once),
   verify_at_once_because: need(maybe(text), given.verify_at_once_because),
+  speculate_to: need(whole, given.speculate_to),
+  speculate_to_because: need(maybe(text), given.speculate_to_because),
   entries: need(list(readsAsARow), given.entries),
 }));
 

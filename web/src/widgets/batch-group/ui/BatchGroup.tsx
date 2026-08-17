@@ -29,6 +29,12 @@ function howMany(count: number): string {
   return count === 1 ? "1 pull request" : `${count} pull requests`;
 }
 
+function numbers(these: number[]): string {
+  const written = these.map((one) => `#${one}`);
+  if (written.length <= 1) return written.join("");
+  return `${written.slice(0, -1).join(", ")} and ${written[written.length - 1]}`;
+}
+
 function headline(attempt: Trial, rows: Row[]): string {
   const merged = rows.length > 0 && rows.every((row) => row.status === "Merged");
   if (attempt.conclusion === "success") return merged ? "Merged" : "Passed";
@@ -40,19 +46,31 @@ function headline(attempt: Trial, rows: Row[]): string {
 function about(attempt: Trial): string[] {
   const said = [`${howMany(attempt.aboard.length)} on 1 CI run`];
   if (attempt.narrowed_from !== null) said.push("narrowed down after a failure");
-  said.push(`on ${attempt.base.slice(0, 7)}`);
+  said.push(
+    attempt.assuming.length > 0
+      ? `on top of ${numbers(attempt.assuming)}, which have not landed yet`
+      : `on ${attempt.base.slice(0, 7)}`,
+  );
   said.push(`${ago(attempt.finished_at ?? attempt.started_at)} ago`);
   return said;
 }
 
 function whatItMeans(attempt: Trial, rows: Row[]): string | null {
+  const broke = attempt.conclusion === "failure" || attempt.conclusion === "timed_out";
+  const landed = rows.length > 0 && rows.every((row) => row.status === "Merged");
+  if (attempt.assuming.length > 0 && !landed) {
+    const ahead = numbers(attempt.assuming);
+    if (broke) {
+      return `This was verified on top of ${ahead}, so its failure accuses nobody. It is thrown away and built again.`;
+    }
+    if (attempt.conclusion === "success") {
+      return `This already passed. It merges the moment ${ahead} land, without running again.`;
+    }
+    return `This is running now, so it can merge the moment ${ahead} land.`;
+  }
   if (rows.length < 2) return null;
-  if (attempt.conclusion === "failure" || attempt.conclusion === "timed_out") {
-    return "They failed together, so none of them is the one at fault yet.";
-  }
-  if (rows.every((row) => row.status === "Merged")) {
-    return "One CI run landed all of them.";
-  }
+  if (broke) return "They failed together, so none of them is the one at fault yet.";
+  if (landed) return "One CI run landed all of them.";
   if (attempt.conclusion === "success") return null;
   return "These merge together or none of them do.";
 }

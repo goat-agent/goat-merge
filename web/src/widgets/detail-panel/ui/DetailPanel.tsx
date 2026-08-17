@@ -206,8 +206,7 @@ function Attempt({ attempt, owner, name }: { attempt: Trial; owner: string; name
     <Well className="text-ui">
       <div className="flex items-center justify-between">
         <span className="font-mono text-mono text-ink-faint">
-          {attempt.aboard.map((number) => `#${number}`).join(", ")} on{" "}
-          {attempt.base.slice(0, 7)}
+          {attempt.aboard.map((number) => `#${number}`).join(", ")} on {attempt.base.slice(0, 7)}
         </span>
         <span className={conclusions[attempt.conclusion] ?? "text-ink-faint"}>
           {attempt.conclusion}
@@ -222,6 +221,11 @@ function Attempt({ attempt, owner, name }: { attempt: Trial; owner: string; name
         >
           candidate #{attempt.candidate_pull_request}
         </a>
+      ) : null}
+      {attempt.assuming.length > 0 ? (
+        <p className="text-ink-faint">
+          built assuming {attempt.assuming.map((number) => `#${number}`).join(", ")} land first
+        </p>
       ) : null}
       {attempt.failed_checks.map((check) => (
         <p key={check} className="text-danger">

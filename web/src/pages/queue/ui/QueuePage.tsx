@@ -43,21 +43,23 @@ function intoGroups(rows: Row[]): { groups: Riding[]; alone: Row[] } {
       riding.set(row.attempt.id, { attempt: row.attempt, rows: [row] });
     }
   }
-  const groups: Riding[] = [];
-  for (const one of riding.values()) {
-    if (one.rows.length > 1) {
-      groups.push(one);
-    } else {
-      alone.push(...one.rows);
-    }
-  }
+  const groups = [...riding.values()].sort(
+    (one, other) =>
+      one.attempt.depth - other.attempt.depth ||
+      one.attempt.started_at.localeCompare(other.attempt.started_at),
+  );
   return { groups, alone };
 }
 
 function perCiRun(shown: QueueView): string {
   const many = shown.verify_at_once;
-  const rate = many <= 1 ? "one at a time" : `${many} per CI run`;
-  return shown.verify_at_once_because ? `${rate} · ${shown.verify_at_once_because}` : rate;
+  const said = [many <= 1 ? "one at a time" : `${many} per CI run`];
+  if (shown.verify_at_once_because) said.push(shown.verify_at_once_because);
+  if (shown.speculate_to > 1) {
+    said.push(`${shown.speculate_to} candidates at once`);
+    if (shown.speculate_to_because) said.push(shown.speculate_to_because);
+  }
+  return said.join(" · ");
 }
 
 export function QueuePage() {
