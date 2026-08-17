@@ -223,6 +223,9 @@ function Attempt({ attempt, owner, name }: { attempt: Trial; owner: string; name
           {check}
         </p>
       ))}
+      {attempt.discarded_because ? (
+        <p className="text-ink-faint">thrown away because {attempt.discarded_because}</p>
+      ) : null}
       <p className="text-ink-faint">started {ago(attempt.started_at)} ago</p>
     </Well>
   );

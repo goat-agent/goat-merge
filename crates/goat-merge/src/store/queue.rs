@@ -45,6 +45,7 @@ pub struct Attempt {
     pub failed_checks: Vec<String>,
     pub started_at: OffsetDateTime,
     pub finished_at: Option<OffsetDateTime>,
+    pub discarded_because: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -60,7 +61,8 @@ const ENTRY_COLUMNS: &str = "id, queue_id, pull_request, title, requested_by, re
                              queued_at, priority, expedited_by, expedite_note, status, \
                              status_detail, settled_at, merged_sha";
 const ATTEMPT_COLUMNS: &str = "id, queue_id, base, candidate_branch, candidate_pull_request, \
-                               candidate_sha, conclusion, failed_checks, started_at, finished_at";
+                               candidate_sha, conclusion, failed_checks, started_at, finished_at, \
+                               discarded_because";
 const RUNNING_ORDER: &str = "order by priority desc, queued_at asc nulls last, requested_at asc";
 
 impl Store {

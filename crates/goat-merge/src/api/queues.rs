@@ -39,6 +39,7 @@ pub struct Row {
 pub struct Trial {
     pub base: String,
     pub aboard: Vec<i32>,
+    pub discarded_because: Option<String>,
     pub candidate_branch: String,
     pub candidate_pull_request: Option<i32>,
     pub candidate_sha: Option<String>,
@@ -53,6 +54,7 @@ impl Trial {
         Self {
             base: attempt.base,
             aboard: aboard.into_iter().map(|one| one.pull_request).collect(),
+            discarded_because: attempt.discarded_because,
             candidate_branch: attempt.candidate_branch,
             candidate_pull_request: attempt.candidate_pull_request,
             candidate_sha: attempt.candidate_sha,
@@ -229,6 +231,7 @@ pub async fn one_queue(
         "paused": queue.paused,
         "paused_by": queue.paused_by,
         "base_sha": queue.base_sha,
+        "verify_at_once": queue.verify_at_once,
         "entries": rows,
     }))
     .into_response())

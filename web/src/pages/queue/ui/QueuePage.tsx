@@ -20,6 +20,11 @@ function stillWaiting(row: Row): boolean {
   return row.settled_at === null && !beingVerified.includes(row.status);
 }
 
+function together(atOnce: number): string {
+  if (atOnce <= 1) return "one at a time";
+  return `up to ${atOnce} together`;
+}
+
 function behind(rows: Row[]): string | null {
   const numbers = rows.map((row) => `#${row.pull_request}`);
   if (numbers.length === 0) return null;
@@ -72,6 +77,7 @@ export function QueuePage() {
                       ? "Nothing is in this queue."
                       : "Nothing is being verified right now, so the queue is not moving."
                   }
+                  note={together(shown.verify_at_once)}
                   aside={
                     <div className="flex items-center gap-3">
                       {shown.paused ? (

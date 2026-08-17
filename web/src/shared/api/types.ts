@@ -29,6 +29,7 @@ const statuses = [
 export type Trial = {
   base: string;
   aboard: number[];
+  discarded_because: string | null;
   candidate_branch: string;
   candidate_pull_request: number | null;
   candidate_sha: string | null;
@@ -40,6 +41,7 @@ export type Trial = {
 export const readsAsATrial: Read<Trial> = shape((given) => ({
   base: need(text, given.base),
   aboard: need(list(whole), given.aboard),
+  discarded_because: need(maybe(text), given.discarded_because),
   candidate_branch: need(text, given.candidate_branch),
   candidate_pull_request: need(maybe(whole), given.candidate_pull_request),
   candidate_sha: need(maybe(text), given.candidate_sha),
@@ -85,6 +87,7 @@ export type QueueView = {
   paused: boolean;
   paused_by: string | null;
   base_sha: string | null;
+  verify_at_once: number;
   entries: Row[];
 };
 
@@ -95,6 +98,7 @@ export const readsAsAQueue: Read<QueueView> = shape((given) => ({
   paused: need(yesNo, given.paused),
   paused_by: need(maybe(text), given.paused_by),
   base_sha: need(maybe(text), given.base_sha),
+  verify_at_once: need(whole, given.verify_at_once),
   entries: need(list(readsAsARow), given.entries),
 }));
 
