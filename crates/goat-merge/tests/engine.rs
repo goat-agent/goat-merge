@@ -1215,3 +1215,162 @@ async fn somebody_riding_with_others_is_told_who_else_is_on_the_candidate() {
         entry.status_detail
     );
 }
+
+#[tokio::test]
+async fn a_merge_github_refuses_stops_the_batch_and_leaves_the_rest_in_the_queue() {
+    let world = World::holding_one_ready_pull_request();
+    for head in ["head-one", "head-two"] {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    world.refuses_to_merge(123);
+    let Some(standing) = a_queue_of(Arc::clone(&world), &[(124, "head-two")], 2).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the first tend");
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the second tend");
+
+    assert!(
+        merged_numbers(&standing.world).is_empty(),
+        "the first merge was refused, so nothing behind it should have been merged on a \
+         verification that is now about a tree nobody asked for"
+    );
+    let refused = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 123)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    assert_eq!(refused.status, "Failed");
+    let behind = standing
+        .engine
+        .store
+        .entry(standing.queue_id, 124)
+        .await
+        .expect("the entry")
+        .expect("an entry");
+    assert_eq!(
+        behind.settled_at, None,
+        "#124 did nothing wrong and must still be in the queue"
+    );
+    assert!(
+        standing
+            .engine
+            .store
+            .verification_carrying(behind.id)
+            .await
+            .expect("the verification")
+            .is_none(),
+        "the candidate it rode was tidied away, so the next tend builds a fresh one"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_that_runs_out_of_time_narrows_instead_of_failing_everybody() {
+    let world = World::holding_one_ready_pull_request();
+    for head in ["head-one", "head-two"] {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    let Some(standing) = a_queue_of(Arc::clone(&world), &[(124, "head-two")], 2).await else {
+        return;
+    };
+    standing.world.files.lock().expect("files").insert(
+        ".github/merge-queue.yml".to_owned(),
+        "version: 1\nqueues:\n  - branch: main\n    check_timeout: 1s\n".to_owned(),
+    );
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the first tend");
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![running("test", "2099-01-01T00:00:00Z")],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the second tend");
+
+    for number in [123, 124] {
+        let entry = standing
+            .engine
+            .store
+            .entry(standing.queue_id, number)
+            .await
+            .expect("the entry")
+            .expect("an entry");
+        assert_eq!(
+            entry.settled_at, None,
+            "#{number} shared a candidate that ran out of time, which accuses nobody"
+        );
+    }
+    let queue = standing
+        .engine
+        .store
+        .queue_by_id(standing.queue_id)
+        .await
+        .expect("the queue")
+        .expect("a queue");
+    assert_eq!(
+        queue.verify_at_once, 1,
+        "a batch that never finished is a reason to try fewer, the same as one that failed"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_that_fails_writes_down_that_nobody_is_at_fault_yet() {
+    let world = World::holding_one_ready_pull_request();
+    for head in ["head-one", "head-two"] {
+        world.checks_on(head, vec![stale("test")]);
+    }
+    let Some(standing) = a_queue_of(Arc::clone(&world), &[(124, "head-two")], 2).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the first tend");
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![failing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the second tend");
+
+    let notes = standing
+        .engine
+        .store
+        .what_happened_to(standing.repository_id, Some(124), 20)
+        .await
+        .expect("the timeline");
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.detail.contains("#123") && note.detail.contains("one candidate")),
+        "somebody watching #124 has to be able to see it was held up by a shared failure, and \
+         instead the timeline said {:?}",
+        notes.iter().map(|note| &note.detail).collect::<Vec<_>>()
+    );
+}

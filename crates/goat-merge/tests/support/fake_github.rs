@@ -61,6 +61,7 @@ pub struct World {
     pub labels_removed: Mutex<Vec<(i32, String)>>,
     pub made_branches: Mutex<Vec<String>>,
     pub heads_that_conflict: Mutex<Vec<String>>,
+    pub merges_it_refuses: Mutex<Vec<i32>>,
     next_draft: Mutex<i32>,
 }
 
@@ -119,6 +120,13 @@ impl World {
             .filter(|branch| branch.starts_with("merge-queue/candidate-"))
             .cloned()
             .collect()
+    }
+
+    pub fn refuses_to_merge(&self, number: i32) {
+        self.merges_it_refuses
+            .lock()
+            .expect("refusals")
+            .push(number);
     }
 
     pub fn nothing_merges_into(&self, head: &str) {
@@ -605,7 +613,19 @@ async fn merge(
     State(world): State<Arc<World>>,
     Path((_owner, _repo, number)): Path<(String, String, i32)>,
     axum::Json(body): axum::Json<Value>,
-) -> axum::Json<Value> {
+) -> Response {
+    if world
+        .merges_it_refuses
+        .lock()
+        .expect("refusals")
+        .contains(&number)
+    {
+        return (
+            axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            axum::Json(json!({ "message": "Pull Request is not mergeable" })),
+        )
+            .into_response();
+    }
     let method = body
         .get("merge_method")
         .and_then(Value::as_str)
@@ -626,7 +646,7 @@ async fn merge(
     if let Some(pull) = world.pulls.lock().expect("pulls").get_mut(&number) {
         pull.merged = true;
     }
-    axum::Json(json!({ "sha": landed }))
+    axum::Json(json!({ "sha": landed })).into_response()
 }
 
 async fn who_the_app_is(State(world): State<Arc<World>>) -> Response {
