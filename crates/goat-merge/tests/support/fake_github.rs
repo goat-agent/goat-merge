@@ -63,6 +63,7 @@ pub struct World {
     pub heads_that_conflict: Mutex<Vec<String>>,
     pub merges_it_refuses: Mutex<Vec<i32>>,
     pub protection_is_down: Mutex<bool>,
+    pub protection_flakes_first: Mutex<u32>,
     pub answers_after: Mutex<std::time::Duration>,
     next_draft: Mutex<i32>,
 }
@@ -126,6 +127,10 @@ impl World {
 
     pub fn takes_this_long_to_answer(&self, each: std::time::Duration) {
         *self.answers_after.lock().expect("delay") = each;
+    }
+
+    pub fn fumbles_protection_this_many_times(&self, times: u32) {
+        *self.protection_flakes_first.lock().expect("flakes") = times;
     }
 
     pub fn cannot_answer_about_protection(&self) {
@@ -416,6 +421,17 @@ async fn tip(
 }
 
 async fn protection(State(world): State<Arc<World>>) -> Response {
+    {
+        let mut left = world.protection_flakes_first.lock().expect("flakes");
+        if *left > 0 {
+            *left -= 1;
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({ "message": "No server is currently available" })),
+            )
+                .into_response();
+        }
+    }
     if *world.protection_is_down.lock().expect("protection") {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,

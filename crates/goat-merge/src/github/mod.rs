@@ -180,6 +180,29 @@ impl Github {
         asking: &str,
         request: RequestBuilder,
     ) -> Result<T, GithubError> {
+        let mut wait_before_trying_again = ONE_MORE_TIME;
+        loop {
+            let Some(again) = request.try_clone() else {
+                return self.send_once(asking, request).await;
+            };
+            match self.send_once(asking, again).await {
+                Err(GithubError::Refused { status, .. })
+                    if status.is_server_error() && !wait_before_trying_again.is_empty() =>
+                {
+                    let (pause, rest) = wait_before_trying_again.split_at(1);
+                    wait_before_trying_again = rest;
+                    tokio::time::sleep(std::time::Duration::from_millis(pause[0])).await;
+                }
+                answer => return answer,
+            }
+        }
+    }
+
+    async fn send_once<T: DeserializeOwned>(
+        &self,
+        asking: &str,
+        request: RequestBuilder,
+    ) -> Result<T, GithubError> {
         let response = request
             .send()
             .await
@@ -296,6 +319,8 @@ pub enum GithubError {
     #[error("goat-merge has no GitHub App yet. Open /setup and create one")]
     NoAppYet,
 }
+
+const ONE_MORE_TIME: &[u64] = &[250, 1_000];
 
 impl GithubError {
     pub fn is_conflict(&self) -> bool {

@@ -1476,3 +1476,25 @@ async fn a_deep_queue_is_read_from_github_a_few_at_a_time() {
          {took:?}, which is not the saving concurrency is supposed to buy"
     );
 }
+
+#[tokio::test]
+async fn a_github_five_hundred_that_clears_on_a_second_ask_does_not_stop_the_queue() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2099-01-01T00:00:00Z")]);
+    world.fumbles_protection_this_many_times(1);
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("one 503 that clears is a blip to ride out, not a reason to give up the tend");
+
+    assert_eq!(
+        merged_numbers(&standing.world),
+        vec![123],
+        "the queue should have carried on once github answered"
+    );
+}
