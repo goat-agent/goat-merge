@@ -14,6 +14,7 @@ pub const TEND: &str = "tend";
 pub const IDLE: std::time::Duration = std::time::Duration::from_millis(500);
 pub const HELD_TOO_LONG: Duration = Duration::minutes(10);
 pub const LOOK_AGAIN_IN: Duration = Duration::seconds(45);
+pub const WHILE_GITHUB_MAKES_ITS_MIND_UP: Duration = Duration::seconds(10);
 
 #[derive(Clone)]
 pub struct Engine {

@@ -9,7 +9,7 @@ use support::fake_github::{
     INSTALLATION, NAME, OWNER, World, a_private_key, failing, listening, passing, running,
 };
 use support::{a_seal, a_store_sealed_with, an_id_of_its_own};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 struct Standing {
     engine: Engine,
@@ -1742,5 +1742,31 @@ async fn a_discarded_verification_leaves_a_request_to_start_again() {
     assert!(
         again <= OffsetDateTime::now_utc(),
         "there is nothing left running, so nothing to wait for"
+    );
+}
+
+#[tokio::test]
+async fn a_pull_request_github_has_not_finished_judging_is_looked_at_again_without_being_asked() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2099-01-01T00:00:00Z")]);
+    world.has_not_worked_out_whether_it_merges(123);
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+    let _alone = support::alone_with_the_jobs(&standing.engine.store).await;
+
+    the_worker_takes_a_turn(&standing).await;
+
+    assert!(
+        standing.world.merged_pull_requests().is_empty(),
+        "nothing merges while GitHub is still working out whether it merges cleanly"
+    );
+    let again = when_it_is_to_be_looked_at_again(&standing)
+        .await
+        .expect("GitHub sends no event when it settles, so the queue has to come back and ask");
+    assert!(
+        again <= OffsetDateTime::now_utc() + Duration::seconds(15),
+        "waiting on the sweep leaves a pull request stuck for minutes over a question GitHub \
+         answers in seconds"
     );
 }

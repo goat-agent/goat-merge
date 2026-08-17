@@ -606,3 +606,25 @@ fn turning_batching_off_leaves_one_at_a_time() {
     assert_eq!(how_many_to_verify(&rules, 9, 9), 1);
     assert_eq!(after_a_batch(1, 1, &rules, true), 1);
 }
+
+#[test]
+fn nothing_tells_us_when_github_finishes_working_out_whether_this_merges() {
+    assert!(
+        WhyWaiting::MergeabilityUnknown.github_will_not_tell_us_when_this_changes(),
+        "GitHub sends no event when it settles on an answer, so the queue has to come back and \
+         ask"
+    );
+
+    for waiting in [
+        WhyWaiting::Draft,
+        WhyWaiting::NeedsApproval { have: 1, want: 2 },
+        WhyWaiting::RequiredChecksPending { done: 2, total: 4 },
+        WhyWaiting::QueuePaused,
+    ] {
+        assert!(
+            !waiting.github_will_not_tell_us_when_this_changes(),
+            "a webhook arrives when this changes, so looking again on a timer is only noise: \
+             {waiting}"
+        );
+    }
+}

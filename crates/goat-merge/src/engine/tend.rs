@@ -6,7 +6,7 @@ use goat_merge_core::{
 };
 use time::{Duration, OffsetDateTime};
 
-use super::{Engine, EngineError, LOOK_AGAIN_IN};
+use super::{Engine, EngineError, LOOK_AGAIN_IN, WHILE_GITHUB_MAKES_ITS_MIND_UP};
 use crate::github::calls::WhatTheCheckSays;
 use crate::github::look::{Seen, WhereTheBaseIs};
 use crate::github::{As, GithubError};
@@ -332,6 +332,7 @@ impl Engine {
             .await?;
 
         let mut seen = Vec::new();
+        let mut github_is_still_deciding = false;
         for (id, looked) in looked_at {
             let Some(entry) = running.iter().find(|entry| entry.id == id).cloned() else {
                 continue;
@@ -345,12 +346,26 @@ impl Engine {
             {
                 continue;
             }
-            if assess(&looked.snapshot) == Readiness::Ready {
+            let readiness = assess(&looked.snapshot);
+            if readiness == Readiness::Ready {
                 self.store.take_a_number(entry.id).await?;
             } else if entry.queued_at.is_some() {
                 self.store.give_up_the_number(entry.id).await?;
             }
+            if let Readiness::Waiting(why) = &readiness {
+                github_is_still_deciding |= why.github_will_not_tell_us_when_this_changes();
+            }
             seen.push((entry.id, looked));
+        }
+
+        if github_is_still_deciding {
+            self.store
+                .ask_for_later(
+                    super::TEND,
+                    &super::subject(tending.queue.id),
+                    WHILE_GITHUB_MAKES_ITS_MIND_UP,
+                )
+                .await?;
         }
 
         let entries = self.store.running(tending.queue.id).await?;

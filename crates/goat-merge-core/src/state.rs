@@ -31,6 +31,12 @@ pub enum WhyWaiting {
     RequiredChecksPending { done: usize, total: usize },
 }
 
+impl WhyWaiting {
+    pub fn github_will_not_tell_us_when_this_changes(&self) -> bool {
+        matches!(self, Self::MergeabilityUnknown)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WhyBlocked {
     Conflict,

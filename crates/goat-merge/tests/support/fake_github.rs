@@ -196,6 +196,12 @@ impl World {
     pub fn move_the_base_to(&self, sha: &str) {
         *self.base_sha.lock().expect("base") = sha.to_owned();
     }
+
+    pub fn has_not_worked_out_whether_it_merges(&self, number: i32) {
+        if let Some(pull) = self.pulls.lock().expect("pulls").get_mut(&number) {
+            pull.mergeable = None;
+        }
+    }
 }
 
 pub fn passing(name: &str, started_at: &str) -> Check {
