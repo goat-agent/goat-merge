@@ -498,7 +498,8 @@ impl Store {
 
     pub async fn discard_attempt(&self, attempt_id: i64, because: &str) -> Result<(), StoreError> {
         sqlx::query(
-            "update verifications set discarded_at = now(), discarded_because = $2 where id = $1",
+            "update verifications set discarded_at = now(), discarded_because = $2 \
+             where id = $1 and discarded_at is null",
         )
         .bind(attempt_id)
         .bind(because)

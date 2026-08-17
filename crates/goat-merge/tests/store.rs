@@ -507,3 +507,47 @@ async fn a_job_asked_for_again_does_not_carry_the_last_run_s_attempts() {
          busy the queue has been"
     );
 }
+
+#[tokio::test]
+async fn throwing_the_same_verification_away_twice_keeps_the_first_reason() {
+    let Some(store) = a_store().await else { return };
+    let repository = a_repository(&store).await;
+    let queue = store
+        .queue_for(repository.id, "main")
+        .await
+        .expect("a queue");
+    let entry = store
+        .enter(queue.id, 9, "frank", "a change")
+        .await
+        .expect("an entry");
+    let attempt = store
+        .open_attempt(
+            queue.id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(entry.id, "head-one".to_owned())],
+            None,
+        )
+        .await
+        .expect("an attempt");
+
+    store
+        .discard_attempt(attempt.id, "the base moved")
+        .await
+        .expect("thrown away");
+    store
+        .discard_attempt(attempt.id, "everyone it was verifying left the queue")
+        .await
+        .expect("thrown away again");
+
+    let told = store
+        .the_last_verification_on(queue.id)
+        .await
+        .expect("the verification")
+        .expect("the one we opened");
+    assert_eq!(
+        told.discarded_because.as_deref(),
+        Some("the base moved"),
+        "a retry must not rewrite why something was thrown away the first time"
+    );
+}
