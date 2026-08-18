@@ -27,11 +27,11 @@ Anything touching `crates/goat-merge` needs a PostgreSQL to talk to:
 
 ```sh
 docker compose up -d db
-docker compose exec db createdb -U goat goat_merge_test   # once
-export DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/goat_merge_test
+docker compose exec db createdb -U goat merge_test   # once
+export DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/merge_test
 ```
 
-**Test against `goat_merge_test`, never against a database a server is using.** The tests are
+**Test against `merge_test`, never against a database a server is using.** The tests are
 destructive: `app_credentials` holds one row, so they overwrite whatever GitHub App is
 registered there, and GitHub shows a private key once. Losing it means creating the App again,
 and the old one is left behind in the organization.
@@ -59,7 +59,7 @@ Run the narrowest relevant check first, then widen in proportion to what you tou
 To run it by hand:
 
 ```sh
-DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/goat_merge \
+DATABASE_URL=postgres://goat:goat@127.0.0.1:5432/merge \
 GOAT_MERGE_PUBLIC_URL=http://127.0.0.1:8080 \
 GOAT_MERGE_MASTER_KEY=$(openssl rand -hex 32) \
 cargo run -p goat-merge -- run

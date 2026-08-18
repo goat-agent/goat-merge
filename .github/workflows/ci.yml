@@ -37,7 +37,7 @@ jobs:
         env:
           POSTGRES_USER: goat
           POSTGRES_PASSWORD: goat
-          POSTGRES_DB: goat_merge
+          POSTGRES_DB: merge
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U goat"
@@ -46,7 +46,7 @@ jobs:
           --health-retries 20
     env:
       GOAT_MERGE_SKIP_WEB_BUILD: "1"
-      DATABASE_URL: postgres://goat:goat@127.0.0.1:5432/goat_merge
+      DATABASE_URL: postgres://goat:goat@127.0.0.1:5432/merge
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
