@@ -85,7 +85,7 @@ export function SettingsPage() {
                   }
                 />
                 <Line
-                  settled={found.merge_methods.length === 1 || found.config !== null}
+                  settled={found.knows_how_to_merge}
                   says={`merge methods allowed: ${found.merge_methods.join(", ") || "none"}`}
                 />
                 <Line
@@ -224,7 +224,22 @@ function Suggestion({ advice }: { advice: Advice }) {
   return (
     <li className="flex items-start gap-2 text-ui">
       <Icon className={cn("mt-0.5 size-3.5 shrink-0", mark.tint)} />
-      <span>{advice.text}</span>
+      <span>
+        {advice.text}
+        {advice.where && advice.follow ? (
+          <>
+            {" "}
+            <a
+              className="text-primary underline-offset-2 hover:underline"
+              href={advice.where}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {advice.follow}
+            </a>
+          </>
+        ) : null}
+      </span>
     </li>
   );
 }

@@ -170,11 +170,18 @@ export const readsAsInsights: Read<Insights> = shape((given) => ({
   merged_by_day: need(list(readsAsADay), given.merged_by_day),
 }));
 
-export type Advice = { level: "info" | "warning" | "error"; text: string };
+export type Advice = {
+  level: "info" | "warning" | "error";
+  text: string;
+  where: string | null;
+  follow: string | null;
+};
 
 const readsAsAdvice: Read<Advice> = shape((given) => ({
   level: need(oneOf(["info", "warning", "error"] as const), given.level),
   text: need(text, given.text),
+  where: need(maybe(text), given.where),
+  follow: need(maybe(text), given.follow),
 }));
 
 export type Diagnosis = {
@@ -189,6 +196,7 @@ export type Diagnosis = {
   check_name: string;
   config: string | null;
   fork_workflow: "missing" | "refused" | "safe";
+  knows_how_to_merge: boolean;
   advice: Advice[];
 };
 
@@ -215,6 +223,7 @@ export const readsAsADiagnosis: Read<Diagnosis> = shape((given) => ({
   check_name: need(text, given.check_name),
   config: need(maybe(text), given.config),
   fork_workflow: need(oneOf(["missing", "refused", "safe"] as const), given.fork_workflow),
+  knows_how_to_merge: need(yesNo, given.knows_how_to_merge),
   advice: need(list(readsAsAdvice), given.advice),
 }));
 
