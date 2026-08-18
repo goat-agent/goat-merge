@@ -188,7 +188,7 @@ export type Diagnosis = {
   enforced: boolean;
   check_name: string;
   config: string | null;
-  fork_workflow: boolean;
+  fork_workflow: "missing" | "refused" | "safe";
   advice: Advice[];
 };
 
@@ -214,7 +214,7 @@ export const readsAsADiagnosis: Read<Diagnosis> = shape((given) => ({
   enforced: need(yesNo, given.enforced),
   check_name: need(text, given.check_name),
   config: need(maybe(text), given.config),
-  fork_workflow: need(yesNo, given.fork_workflow),
+  fork_workflow: need(oneOf(["missing", "refused", "safe"] as const), given.fork_workflow),
   advice: need(list(readsAsAdvice), given.advice),
 }));
 

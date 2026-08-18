@@ -10,7 +10,7 @@ use super::auth::{Standing, whoever_is_asking};
 use super::queues::{found_for_reading, ready_to_set_up};
 use super::{Answer, Fault, Incident, Named, Sent, Wanting};
 use crate::engine::Engine;
-use crate::github::look::FORK_WORKFLOW;
+use crate::github::look::{FORK_WORKFLOW, declares_no_secrets};
 use crate::github::{AppAuth, As};
 use crate::store::credentials::AppCredentials;
 
@@ -194,7 +194,11 @@ pub async fn diagnose(
         "enforced": our_check_is_required,
         "check_name": CHECK_NAME,
         "config": configured,
-        "fork_workflow": fork_workflow.is_some(),
+        "fork_workflow": match &fork_workflow {
+            None => "missing",
+            Some(workflow) if declares_no_secrets(workflow) => "safe",
+            Some(_) => "refused",
+        },
         "advice": advice(
             protection.declared_anywhere,
             our_check_is_required,
