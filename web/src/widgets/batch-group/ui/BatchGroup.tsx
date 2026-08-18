@@ -66,13 +66,14 @@ function whatItMeans(attempt: Trial, rows: Row[]): string | null {
   const landed = rows.length > 0 && rows.every((row) => row.status === "Merged");
   if (attempt.assuming.length > 0 && !landed) {
     const ahead = numbers(attempt.assuming);
+    const lands = attempt.assuming.length === 1 ? "lands" : "land";
     if (broke) {
       return `This was verified on top of ${ahead}, so its failure accuses nobody. It is thrown away and built again.`;
     }
     if (attempt.conclusion === "success") {
-      return `This already passed. It merges the moment ${ahead} land, without running again.`;
+      return `This already passed. It merges the moment ${ahead} ${lands}, without running again.`;
     }
-    return `This is running now, so it can merge the moment ${ahead} land.`;
+    return `This is running now, so it can merge the moment ${ahead} ${lands}.`;
   }
   if (rows.length < 2) return null;
   if (broke) return "They failed together, so none of them is the one at fault yet.";
