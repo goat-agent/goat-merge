@@ -171,6 +171,16 @@ impl World {
         self.drafts.lock().expect("drafts").clone()
     }
 
+    pub fn what_it_ever_said_about(&self, head: &str) -> Vec<Option<String>> {
+        self.published
+            .lock()
+            .expect("published")
+            .iter()
+            .filter(|(sha, _, _, _)| sha == head)
+            .map(|(_, _, conclusion, _)| conclusion.clone())
+            .collect()
+    }
+
     pub fn check_conclusions(&self) -> Vec<Option<String>> {
         self.published
             .lock()

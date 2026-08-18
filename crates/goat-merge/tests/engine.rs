@@ -2258,3 +2258,86 @@ async fn a_candidate_built_ahead_that_fails_says_which_of_the_two_things_went_wr
          failed, sends somebody looking in the wrong place: {thrown:?}"
     );
 }
+
+#[tokio::test]
+async fn a_passing_candidate_built_ahead_does_not_turn_the_check_green() {
+    let world = two_ready_pull_requests();
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front candidate");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the one on top of it");
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend that sees it pass while the one in front is still running");
+
+    assert!(
+        !standing
+            .world
+            .what_it_ever_said_about("head-two")
+            .iter()
+            .any(|conclusion| conclusion.as_deref() == Some("success")),
+        "our check is the gate: turning it green before the merge lets somebody merge by hand \
+         around the queue, and this one has not earned a merge until what it assumed lands"
+    );
+    assert!(standing.world.merged_pull_requests().is_empty());
+}
+
+#[tokio::test]
+async fn only_one_candidate_merges_in_a_single_look_at_the_queue() {
+    let world = two_ready_pull_requests();
+    let Some(standing) = a_queue_speculating_two_deep(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the front candidate");
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("the one on top of it");
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing.world.checks_on(
+        "candidate-of-head-two",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend where both have passed");
+
+    assert_eq!(
+        standing
+            .world
+            .merged_pull_requests()
+            .iter()
+            .map(|(number, _, _)| *number)
+            .collect::<Vec<_>>(),
+        vec![123],
+        "merging moves the branch, so everything worked out from the old tip in this pass is \
+         about a base that no longer exists; the one behind is looked at again next time"
+    );
+}
