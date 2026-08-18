@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { WhatWeHave, WhatWentWrong } from "@/entities/trouble";
-import type { Advice } from "@/shared/api";
+import type { Advice, Diagnosis } from "@/shared/api";
 import { api, Trouble } from "@/shared/api";
 import { cn, useAsked, useEvery, useLive } from "@/shared/lib";
 import { Badge, Button, Code, Empty, PageBody, Panel, Select } from "@/shared/ui";
@@ -17,6 +17,8 @@ export function SettingsPage() {
   const [method, setMethod] = useState("");
   const [atOnce, setAtOnce] = useState(defaultBatchSize);
   const asked = useAsked(() => api.diagnose(owner, name), [owner, name], useLive() + useEvery(30));
+  const allowed = asked.answer?.merge_methods ?? [];
+  const mustPickAMergeMethod = allowed.length > 1 && method === "";
 
   async function doing(work: () => Promise<string | null>) {
     setBusy(true);
@@ -85,7 +87,7 @@ export function SettingsPage() {
                   }
                 />
                 <Line
-                  settled={found.merge_methods.length === 1 || found.config !== null}
+                  settled={found.knows_how_to_merge}
                   says={`merge methods allowed: ${found.merge_methods.join(", ") || "none"}`}
                 />
                 <Line
@@ -93,12 +95,8 @@ export function SettingsPage() {
                   says={`the ${found.label.name} label ${found.label.exists ? "exists" : "does not exist yet"}`}
                 />
                 <Line
-                  settled={found.fork_workflow}
-                  says={
-                    found.fork_workflow
-                      ? "a fork queue workflow is declared, so fork pull requests can be verified safely"
-                      : "no fork queue workflow, so pull requests from forks will be blocked"
-                  }
+                  settled={found.fork_workflow === "safe"}
+                  says={howForkPullRequestsStand[found.fork_workflow]}
                 />
               </ul>
             </Panel>
@@ -142,14 +140,28 @@ export function SettingsPage() {
                 </div>
                 <p className="text-ui text-ink-faint">
                   A ceiling, not a target. The queue starts at one and works up to it as the
-                  repository proves itself, and halves back down when a batch fails until it
-                  finds the pull request at fault.
+                  repository proves itself, and halves back down when a batch fails until it finds
+                  the pull request at fault.
                 </p>
+                {mustPickAMergeMethod ? (
+                  <p className="text-ui text-warning">
+                    This repository allows {allowed.join(", ")}. Pick one before turning the queue
+                    on — a queue that has not been told which history you want blocks every pull
+                    request rather than guess.
+                  </p>
+                ) : null}
                 <div className="flex flex-wrap gap-2">
-                  <Button tone="primary" disabled={busy} onClick={() => enable(found.branch, true)}>
+                  <Button
+                    tone="primary"
+                    disabled={busy || mustPickAMergeMethod}
+                    onClick={() => enable(found.branch, true)}
+                  >
                     Enable and open a configuration pull request
                   </Button>
-                  <Button disabled={busy} onClick={() => enable(found.branch, false)}>
+                  <Button
+                    disabled={busy || mustPickAMergeMethod}
+                    onClick={() => enable(found.branch, false)}
+                  >
                     Enable without a configuration file
                   </Button>
                   {found.active ? (
@@ -192,6 +204,13 @@ export function SettingsPage() {
   );
 }
 
+const howForkPullRequestsStand: Record<Diagnosis["fork_workflow"], string> = {
+  safe: "a fork queue workflow is declared, so fork pull requests can be verified safely",
+  refused:
+    "a fork queue workflow is declared, but it asks for something a stranger's code must not have, so fork pull requests are still blocked",
+  missing: "no fork queue workflow, so pull requests from forks will be blocked",
+};
+
 const whateverIsAllowed = "whatever the repository allows";
 const batchSizes = [1, 2, 3, 5, 8, 10];
 const defaultBatchSize = 5;
@@ -221,7 +240,22 @@ function Suggestion({ advice }: { advice: Advice }) {
   return (
     <li className="flex items-start gap-2 text-ui">
       <Icon className={cn("mt-0.5 size-3.5 shrink-0", mark.tint)} />
-      <span>{advice.text}</span>
+      <span>
+        {advice.text}
+        {advice.where && advice.follow ? (
+          <>
+            {" "}
+            <a
+              className="text-primary underline-offset-2 hover:underline"
+              href={advice.where}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {advice.follow}
+            </a>
+          </>
+        ) : null}
+      </span>
     </li>
   );
 }
