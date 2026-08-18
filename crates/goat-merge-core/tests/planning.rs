@@ -907,3 +907,81 @@ fn a_sentence_about_one_pull_request_does_not_read_as_if_there_were_several() {
         "checking the candidate, which assumes #11 lands first"
     );
 }
+
+#[test]
+fn a_pull_request_whose_candidate_passed_does_not_wait_for_github_to_work_out_whether_it_merges() {
+    let snapshot = a_pull_request().whose_mergeability_is_unknown().done();
+    let passed = verified(Conclusion::Success);
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..at_the_front(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(
+        decision.status,
+        Status::Merging,
+        "we merged this head into the candidate ourselves and its checks passed, so GitHub \
+         still thinking about whether it merges is not news"
+    );
+    assert_eq!(
+        decision.next,
+        Next::Merge {
+            method: MergeMethod::Squash
+        }
+    );
+}
+
+#[test]
+fn a_pull_request_with_nothing_to_show_for_itself_waits_for_github_to_make_its_mind_up() {
+    let snapshot = a_pull_request().whose_mergeability_is_unknown().done();
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &at_the_front(alone())).status,
+        Status::Waiting(WhyWaiting::MergeabilityUnknown),
+        "with no candidate behind it there is no evidence that it merges, so the queue waits"
+    );
+}
+
+#[test]
+fn a_stale_verification_does_not_let_an_unknown_mergeability_through() {
+    let snapshot = a_pull_request().whose_mergeability_is_unknown().done();
+    let stale = Verification {
+        base: Sha::from("base-zero"),
+        ..verified(Conclusion::Success)
+    };
+    let entry = InQueue {
+        verification: Some(&stale),
+        ..at_the_front(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(
+        decision.next,
+        Next::DiscardVerification,
+        "it proves nothing about the tree that is there now, so it is thrown away"
+    );
+    assert!(
+        !matches!(decision.next, Next::BuildCandidate { .. }),
+        "building a candidate for something GitHub has not said merges risks settling it on a \
+         conflict that may not be real"
+    );
+}
+
+#[test]
+fn a_conflict_is_never_talked_out_of_by_a_candidate_that_passed() {
+    let snapshot = a_pull_request().that_conflicts().done();
+    let passed = verified(Conclusion::Success);
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..at_the_front(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).status,
+        Status::Blocked(WhyBlocked::Conflict),
+        "GitHub saying it does not merge is an answer, not the absence of one"
+    );
+}

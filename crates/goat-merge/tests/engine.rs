@@ -2341,3 +2341,40 @@ async fn only_one_candidate_merges_in_a_single_look_at_the_queue() {
          about a base that no longer exists; the one behind is looked at again next time"
     );
 }
+
+#[tokio::test]
+async fn a_candidate_that_passed_merges_while_github_is_still_working_out_the_mergeability() {
+    let world = World::holding_one_ready_pull_request();
+    world.checks_on("head-one", vec![passing("test", "2000-01-01T00:00:00Z")]);
+    let Some(standing) = a_repository_with(Arc::clone(&world)).await else {
+        return;
+    };
+
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a candidate");
+    standing.world.checks_on(
+        "candidate-of-head-one",
+        vec![passing("test", "2099-01-01T00:00:00Z")],
+    );
+    standing.world.has_not_worked_out_whether_it_merges(123);
+    standing
+        .engine
+        .tend(standing.queue_id)
+        .await
+        .expect("a tend while GitHub is still deciding");
+
+    assert_eq!(
+        standing
+            .world
+            .merged_pull_requests()
+            .iter()
+            .map(|(number, _, _)| *number)
+            .collect::<Vec<_>>(),
+        vec![123],
+        "GitHub recomputes this in the background for minutes after the base moves; a candidate \
+         that carried this head and passed has already answered the question"
+    );
+}

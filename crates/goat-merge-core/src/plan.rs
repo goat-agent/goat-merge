@@ -74,6 +74,8 @@ pub fn decide(snapshot: &Snapshot, queue: &Queue, entry: &InQueue<'_>) -> Decisi
 
     match assess(snapshot) {
         Readiness::Blocked(why) => return settled(Status::Blocked(why)),
+        Readiness::Waiting(WhyWaiting::MergeabilityUnknown)
+            if we_have_merged_this_head_ourselves(snapshot, entry) => {}
         Readiness::Waiting(why) => return settled(Status::Waiting(why)),
         Readiness::Ready => {}
     }
@@ -186,6 +188,16 @@ pub fn how_the_assumption_turned_out(assumed: &[Assumed], tip: &Sha) -> TheAssum
         }) if at == tip => TheAssumption::Held,
         Some(_) => TheAssumption::Broken,
     }
+}
+
+fn we_have_merged_this_head_ourselves(snapshot: &Snapshot, entry: &InQueue<'_>) -> bool {
+    entry.verification.is_some_and(|verification| {
+        verification.conclusion == Conclusion::Success
+            && verification
+                .aboard
+                .iter()
+                .any(|one| one.head == snapshot.head)
+    })
 }
 
 fn the_same_ones(assumed: &[Assumed], assuming: &[Aboard]) -> bool {

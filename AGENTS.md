@@ -115,6 +115,12 @@ These are not style preferences. Breaking one lets a broken commit onto somebody
   fast path is allowed only when every required check *started* after the base last moved. A
   check that began at 09:50 and finished at 10:30 tested the base as it was before the 10:00
   push, so its completion time proves nothing. A check with no start time is never trusted.
+- **GitHub's mergeable flag is not the only evidence that something merges.** GitHub computes
+  it in the background and answers `null` for minutes after the base moves. A pull request whose
+  candidate carried this exact head and passed has already been merged by us, into the tree the
+  checks tested, so an unknown answer must not hold it back. Nothing else skips readiness: a
+  conflict is an answer and still blocks, and a pull request with no passing candidate still
+  waits.
 - **We learn when the base moved by watching, not by asking.** `queues.base_moved_at` is set
   whenever we see the tip change. A commit's own timestamp is not when it landed on a branch,
   so it must never be used for this.
