@@ -134,15 +134,21 @@ impl Github {
 }
 
 pub fn declares_no_secrets(workflow: &str) -> bool {
-    let mentions_secrets = workflow.contains("secrets.") || workflow.contains("secrets:");
-    let declares_permissions = workflow
+    let runs = what_it_actually_runs(workflow);
+    let mentions_secrets = runs.contains("secrets.") || runs.contains("secrets:");
+    let declares_permissions = runs
         .lines()
         .any(|line| line.trim_start().starts_with("permissions:"));
-    let writes = workflow.contains("write-all")
-        || workflow
-            .lines()
-            .any(|line| line.contains(": write") && !line.trim_start().starts_with('#'));
+    let writes = runs.contains("write-all") || runs.lines().any(|line| line.contains(": write"));
     declares_permissions && !mentions_secrets && !writes
+}
+
+fn what_it_actually_runs(workflow: &str) -> String {
+    workflow
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn allowed_by(
