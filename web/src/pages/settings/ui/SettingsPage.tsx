@@ -17,6 +17,8 @@ export function SettingsPage() {
   const [method, setMethod] = useState("");
   const [atOnce, setAtOnce] = useState(defaultBatchSize);
   const asked = useAsked(() => api.diagnose(owner, name), [owner, name], useLive() + useEvery(30));
+  const allowed = asked.answer?.merge_methods ?? [];
+  const mustPickAMergeMethod = allowed.length > 1 && method === "";
 
   async function doing(work: () => Promise<string | null>) {
     setBusy(true);
@@ -138,14 +140,28 @@ export function SettingsPage() {
                 </div>
                 <p className="text-ui text-ink-faint">
                   A ceiling, not a target. The queue starts at one and works up to it as the
-                  repository proves itself, and halves back down when a batch fails until it
-                  finds the pull request at fault.
+                  repository proves itself, and halves back down when a batch fails until it finds
+                  the pull request at fault.
                 </p>
+                {mustPickAMergeMethod ? (
+                  <p className="text-ui text-warning">
+                    This repository allows {allowed.join(", ")}. Pick one before turning the queue
+                    on — a queue that has not been told which history you want blocks every pull
+                    request rather than guess.
+                  </p>
+                ) : null}
                 <div className="flex flex-wrap gap-2">
-                  <Button tone="primary" disabled={busy} onClick={() => enable(found.branch, true)}>
+                  <Button
+                    tone="primary"
+                    disabled={busy || mustPickAMergeMethod}
+                    onClick={() => enable(found.branch, true)}
+                  >
                     Enable and open a configuration pull request
                   </Button>
-                  <Button disabled={busy} onClick={() => enable(found.branch, false)}>
+                  <Button
+                    disabled={busy || mustPickAMergeMethod}
+                    onClick={() => enable(found.branch, false)}
+                  >
                     Enable without a configuration file
                   </Button>
                   {found.active ? (
