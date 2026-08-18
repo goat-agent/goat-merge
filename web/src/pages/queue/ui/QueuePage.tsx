@@ -51,14 +51,31 @@ function intoGroups(rows: Row[]): { groups: Riding[]; alone: Row[] } {
   return { groups, alone };
 }
 
+type Landed = { riding: Riding } | { row: Row };
+
+function inTheOrderTheyLanded(rows: Row[]): Landed[] {
+  const seen = new Set<number>();
+  const landed: Landed[] = [];
+  for (const row of rows) {
+    const attempt = row.attempt;
+    if (!attempt) {
+      landed.push({ row });
+      continue;
+    }
+    if (seen.has(attempt.id)) continue;
+    seen.add(attempt.id);
+    landed.push({
+      riding: { attempt, rows: rows.filter((one) => one.attempt?.id === attempt.id) },
+    });
+  }
+  return landed;
+}
+
 function perCiRun(shown: QueueView): string {
   const many = shown.verify_at_once;
   const said = [many <= 1 ? "one at a time" : `${many} per CI run`];
+  if (shown.speculate_to > 1) said.push(`${shown.speculate_to} candidates at once`);
   if (shown.verify_at_once_because) said.push(shown.verify_at_once_because);
-  if (shown.speculate_to > 1) {
-    said.push(`${shown.speculate_to} candidates at once`);
-    if (shown.speculate_to_because) said.push(shown.speculate_to_because);
-  }
   return said.join(" · ");
 }
 
@@ -86,7 +103,7 @@ export function QueuePage() {
             const flying = intoGroups(shown.entries.filter(inFlight));
             const queued = shown.entries.filter(inLine);
             const waiting = shown.entries.filter(held);
-            const recent = intoGroups((landed.answer ?? []).slice(0, 8));
+            const recent = inTheOrderTheyLanded((landed.answer ?? []).slice(0, 8));
             return (
               <div className="min-h-0 flex-1 overflow-y-auto pb-6">
                 <QueueBoard
@@ -162,7 +179,7 @@ export function QueuePage() {
 
                 <QueueBoard
                   label="Done"
-                  rows={recent.alone}
+                  rows={[]}
                   chosen={chosen}
                   onChoose={choose}
                   nothing="Nothing has been through this queue yet."
@@ -175,25 +192,36 @@ export function QueuePage() {
                     </Link>
                   }
                 >
-                  {recent.groups.map((riding) => (
-                    <BatchGroup
-                      key={riding.attempt.id}
-                      attempt={riding.attempt}
-                      rows={riding.rows}
-                      owner={owner}
-                      name={name}
-                    >
-                      {riding.rows.map((row) => (
+                  {recent.map((one) =>
+                    "row" in one ? (
+                      <ul key={`row-${one.row.pull_request}`} className="border-b border-hairline">
                         <EntryLine
-                          key={row.pull_request}
-                          row={row}
+                          row={one.row}
                           chosen={chosen}
                           onChoose={choose}
-                          shows="identity"
+                          shows="everything"
                         />
-                      ))}
-                    </BatchGroup>
-                  ))}
+                      </ul>
+                    ) : (
+                      <BatchGroup
+                        key={one.riding.attempt.id}
+                        attempt={one.riding.attempt}
+                        rows={one.riding.rows}
+                        owner={owner}
+                        name={name}
+                      >
+                        {one.riding.rows.map((row) => (
+                          <EntryLine
+                            key={row.pull_request}
+                            row={row}
+                            chosen={chosen}
+                            onChoose={choose}
+                            shows="identity"
+                          />
+                        ))}
+                      </BatchGroup>
+                    ),
+                  )}
                 </QueueBoard>
               </div>
             );

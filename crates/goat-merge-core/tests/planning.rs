@@ -878,3 +878,32 @@ fn a_chain_that_was_thrown_away_makes_the_queue_speculate_less() {
     assert_eq!(after_a_chain(1, &rules, false), 2);
     assert_eq!(after_a_chain(2, &rules, false), 2, "the ceiling holds");
 }
+
+#[test]
+fn a_sentence_about_one_pull_request_does_not_read_as_if_there_were_several() {
+    let one = Status::Preparing {
+        alongside: Vec::new(),
+        assuming: vec![11],
+    };
+    let two = Status::Preparing {
+        alongside: Vec::new(),
+        assuming: vec![11, 12],
+    };
+
+    assert_eq!(
+        one.to_string(),
+        "building a candidate on top of #11, which has not landed yet"
+    );
+    assert_eq!(
+        two.to_string(),
+        "building a candidate on top of #11 and #12, which have not landed yet"
+    );
+    assert_eq!(
+        Status::Validating {
+            alongside: Vec::new(),
+            assuming: vec![11],
+        }
+        .to_string(),
+        "checking the candidate, which assumes #11 lands first"
+    );
+}

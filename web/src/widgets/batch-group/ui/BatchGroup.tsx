@@ -43,12 +43,18 @@ function headline(attempt: Trial, rows: Row[]): string {
   return rows.some((row) => row.status === "Preparing") ? "Preparing" : "Checking";
 }
 
-function about(attempt: Trial): string[] {
+function stillWaitingOn(assuming: number[], settled: boolean): string {
+  if (settled) return `on top of ${numbers(assuming)}`;
+  const one = assuming.length === 1;
+  return `on top of ${numbers(assuming)}, which ${one ? "has" : "have"} not landed yet`;
+}
+
+function about(attempt: Trial, settled: boolean): string[] {
   const said = [`${howMany(attempt.aboard.length)} on 1 CI run`];
   if (attempt.narrowed_from !== null) said.push("narrowed down after a failure");
   said.push(
     attempt.assuming.length > 0
-      ? `on top of ${numbers(attempt.assuming)}, which have not landed yet`
+      ? stillWaitingOn(attempt.assuming, settled)
       : `on ${attempt.base.slice(0, 7)}`,
   );
   said.push(`${ago(attempt.finished_at ?? attempt.started_at)} ago`);
@@ -101,7 +107,12 @@ export function BatchGroup({
           )}
         />
         <span className="text-ink">{headline(attempt, rows)}</span>
-        <span className="text-ink-faint">{about(attempt).join(" · ")}</span>
+        <span className="text-ink-faint">
+          {about(
+            attempt,
+            rows.every((row) => row.settled_at !== null),
+          ).join(" · ")}
+        </span>
         <span className="flex-1" />
         {attempt.candidate_pull_request ? (
           <a

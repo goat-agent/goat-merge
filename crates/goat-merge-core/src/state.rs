@@ -222,6 +222,7 @@ impl fmt::Display for WhyFailed {
 fn what_it_is_built_on(assuming: &[u64]) -> String {
     match assuming {
         [] => "the latest base".to_owned(),
+        [one] => format!("top of #{one}, which has not landed yet"),
         many => format!("top of {}, which have not landed yet", numbers_phrase(many)),
     }
 }
