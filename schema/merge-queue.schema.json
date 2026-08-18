@@ -33,16 +33,24 @@
             "enum": ["merge", "squash", "rebase"],
             "description": "Required only when the repository allows more than one. goat-merge will not guess which history you want."
           },
-          "mode": {
-            "enum": ["serial"],
-            "default": "serial",
-            "description": "How candidates are verified. Serial is one at a time, and is the only mode today."
-          },
           "check_timeout": {
             "type": "string",
             "pattern": "^[0-9]+[smh]$",
             "default": "45m",
             "description": "How long to wait for a candidate's checks before giving up, written as a number and s, m or h."
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 5,
+            "description": "The most pull requests to put on one candidate and verify together. The queue starts at one and works up to this as it passes, and halves back down when a batch fails until it finds the one at fault. Set it to 1 to verify one at a time."
+          },
+          "speculate": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2,
+            "default": 1,
+            "description": "How many candidates may have checks running at once. 1 is off: each candidate waits for the one in front to land. 2 builds the next candidate on top of the one in front, so its checks are finished by the time the front merges. It spends a CI run every time the one in front fails, because what it verified is a tree that will never exist."
           }
         }
       }

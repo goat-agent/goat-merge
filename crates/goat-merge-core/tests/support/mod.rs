@@ -67,6 +67,11 @@ impl Building {
         self.snapshot
     }
 
+    pub fn numbered(mut self, number: u64) -> Self {
+        self.snapshot.number = number;
+        self
+    }
+
     pub fn that_is_a_draft(mut self) -> Self {
         self.snapshot.draft = true;
         self

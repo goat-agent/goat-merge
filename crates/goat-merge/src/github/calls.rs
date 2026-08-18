@@ -1,5 +1,6 @@
 use base64::Engine;
 use goat_merge_core::CHECK_NAME;
+use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -310,8 +311,7 @@ impl Github {
                 who,
                 &format!("/repos/{repository}/branches/{branch}/protection"),
             )
-            .await
-            .unwrap_or(None);
+            .await?;
         if let Some(classic) = classic {
             protection.declared_anywhere = true;
             if let Some(checks) = classic.required_status_checks {
@@ -324,8 +324,7 @@ impl Github {
 
         let rules: Vec<Rule> = self
             .get_if_there(who, &format!("/repos/{repository}/rules/branches/{branch}"))
-            .await
-            .unwrap_or(None)
+            .await?
             .unwrap_or_default();
         for rule in rules {
             let Some(parameters) = rule.parameters else {
@@ -438,6 +437,19 @@ impl Github {
         .await
     }
 
+    pub async fn open_pulls_onto(
+        &self,
+        who: As,
+        repository: &str,
+        branch: &str,
+    ) -> Result<Vec<PullRequest>, GithubError> {
+        self.get(
+            who,
+            &format!("/repos/{repository}/pulls?state=open&base={branch}&per_page=100"),
+        )
+        .await
+    }
+
     pub async fn label_exists(
         &self,
         who: As,
@@ -468,8 +480,7 @@ impl Github {
                 who,
                 &format!("/repos/{repository}/contents/{path}?ref={branch}"),
             )
-            .await
-            .unwrap_or(None);
+            .await?;
         let mut body = json!({
             "message": message,
             "branch": branch,
@@ -747,4 +758,57 @@ impl Github {
             .await?;
         Ok(standing.permission)
     }
+
+    pub async fn who_we_are(&self) -> Result<TheApp, GithubError> {
+        self.as_ourselves(Method::GET, "/app", None).await
+    }
+
+    pub async fn where_our_webhook_points(&self) -> Result<Option<String>, GithubError> {
+        let config: WebhookConfig = self
+            .as_ourselves(Method::GET, "/app/hook/config", None)
+            .await?;
+        Ok(config.url)
+    }
+
+    pub async fn point_our_webhook_at(&self, url: &str) -> Result<(), GithubError> {
+        let _: Ignored = self
+            .as_ourselves(
+                Method::PATCH,
+                "/app/hook/config",
+                Some(json!({ "url": url })),
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TheApp {
+    pub slug: String,
+    pub owner: AppOwner,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AppOwner {
+    pub login: String,
+    #[serde(rename = "type")]
+    pub sort: String,
+}
+
+impl TheApp {
+    pub fn where_its_settings_are(&self, github_web: &str) -> String {
+        if self.owner.sort == "Organization" {
+            format!(
+                "{github_web}/organizations/{}/settings/apps/{}",
+                self.owner.login, self.slug
+            )
+        } else {
+            format!("{github_web}/settings/apps/{}", self.slug)
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct WebhookConfig {
+    url: Option<String>,
 }

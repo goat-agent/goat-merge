@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::Router;
 use axum::extract::{Path, State};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use serde_json::{Value, json};
 
@@ -34,8 +35,12 @@ pub struct Check {
     pub started_at: String,
 }
 
+type Published = (String, String, Option<String>, String);
+
 #[derive(Default)]
 pub struct World {
+    pub app_is_gone: Mutex<bool>,
+    pub webhook_url: Mutex<String>,
     pub gone: Mutex<bool>,
     pub permissions: Mutex<HashMap<String, String>>,
     pub base_sha: Mutex<String>,
@@ -51,9 +56,16 @@ pub struct World {
     pub drafts: Mutex<Vec<i32>>,
     pub closed: Mutex<Vec<i32>>,
     pub deleted_branches: Mutex<Vec<String>>,
-    pub published: Mutex<Vec<(String, String, Option<String>)>>,
+    pub published: Mutex<Vec<Published>>,
     pub comments: Mutex<Vec<(i32, String)>>,
     pub labels_removed: Mutex<Vec<(i32, String)>>,
+    pub made_branches: Mutex<Vec<String>>,
+    pub heads_that_conflict: Mutex<Vec<String>>,
+    pub merges_it_refuses: Mutex<Vec<i32>>,
+    pub protection_is_down: Mutex<bool>,
+    pub protection_flakes_first: Mutex<u32>,
+    pub answers_after: Mutex<std::time::Duration>,
+    pub answering: Mutex<(usize, usize)>,
     next_draft: Mutex<i32>,
 }
 
@@ -86,6 +98,64 @@ impl World {
         world
     }
 
+    pub fn also_holding(&self, number: i32, head: &str) {
+        self.pulls.lock().expect("pulls").insert(
+            number,
+            Pull {
+                number,
+                state: "open".to_owned(),
+                title: format!("chore: something else ({number})"),
+                head: head.to_owned(),
+                base: "main".to_owned(),
+                draft: false,
+                merged: false,
+                mergeable: Some(true),
+                labels: vec!["merge-queue".to_owned()],
+                from_fork: false,
+            },
+        );
+    }
+
+    pub fn candidate_branches(&self) -> Vec<String> {
+        self.made_branches
+            .lock()
+            .expect("made")
+            .iter()
+            .filter(|branch| branch.starts_with("merge-queue/candidate-"))
+            .cloned()
+            .collect()
+    }
+
+    pub fn most_it_was_ever_asked_at_once(&self) -> usize {
+        self.answering.lock().expect("answering").1
+    }
+
+    pub fn takes_this_long_to_answer(&self, each: std::time::Duration) {
+        *self.answers_after.lock().expect("delay") = each;
+    }
+
+    pub fn fumbles_protection_this_many_times(&self, times: u32) {
+        *self.protection_flakes_first.lock().expect("flakes") = times;
+    }
+
+    pub fn cannot_answer_about_protection(&self) {
+        *self.protection_is_down.lock().expect("protection") = true;
+    }
+
+    pub fn refuses_to_merge(&self, number: i32) {
+        self.merges_it_refuses
+            .lock()
+            .expect("refusals")
+            .push(number);
+    }
+
+    pub fn nothing_merges_into(&self, head: &str) {
+        self.heads_that_conflict
+            .lock()
+            .expect("conflicts")
+            .push(head.to_owned());
+    }
+
     pub fn checks_on(&self, sha: &str, checks: Vec<Check>) {
         self.checks
             .lock()
@@ -101,12 +171,22 @@ impl World {
         self.drafts.lock().expect("drafts").clone()
     }
 
+    pub fn what_it_ever_said_about(&self, head: &str) -> Vec<Option<String>> {
+        self.published
+            .lock()
+            .expect("published")
+            .iter()
+            .filter(|(sha, _, _, _)| sha == head)
+            .map(|(_, _, conclusion, _)| conclusion.clone())
+            .collect()
+    }
+
     pub fn check_conclusions(&self) -> Vec<Option<String>> {
         self.published
             .lock()
             .expect("published")
             .iter()
-            .map(|(_, _, conclusion)| conclusion.clone())
+            .map(|(_, _, conclusion, _)| conclusion.clone())
             .collect()
     }
 
@@ -115,12 +195,27 @@ impl World {
             .lock()
             .expect("published")
             .iter()
-            .map(|(_, title, _)| title.clone())
+            .map(|(_, title, _, _)| title.clone())
+            .collect()
+    }
+
+    pub fn where_the_check_pointed(&self) -> Vec<String> {
+        self.published
+            .lock()
+            .expect("published")
+            .iter()
+            .map(|(_, _, _, details)| details.clone())
             .collect()
     }
 
     pub fn move_the_base_to(&self, sha: &str) {
         *self.base_sha.lock().expect("base") = sha.to_owned();
+    }
+
+    pub fn has_not_worked_out_whether_it_merges(&self, number: i32) {
+        if let Some(pull) = self.pulls.lock().expect("pulls").get_mut(&number) {
+            pull.mergeable = None;
+        }
     }
 }
 
@@ -151,6 +246,25 @@ pub fn running(name: &str, started_at: &str) -> Check {
     }
 }
 
+async fn dawdle(
+    State(world): State<Arc<World>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    {
+        let mut counting = world.answering.lock().expect("answering");
+        counting.0 += 1;
+        counting.1 = counting.1.max(counting.0);
+    }
+    let wait = *world.answers_after.lock().expect("delay");
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+    let answer = next.run(request).await;
+    world.answering.lock().expect("answering").0 -= 1;
+    answer
+}
+
 pub async fn listening(world: Arc<World>) -> String {
     let repository = "/repos/{owner}/{repo}";
     let app = Router::new()
@@ -162,6 +276,11 @@ pub async fn listening(world: Arc<World>) -> String {
                     "expires_at": "2099-01-01T00:00:00Z",
                 }))
             }),
+        )
+        .route("/app", get(who_the_app_is))
+        .route(
+            "/app/hook/config",
+            get(where_the_webhook_points).patch(point_the_webhook),
         )
         .route("/installation/repositories", get(installed_on))
         .route(repository, get(settings))
@@ -224,6 +343,10 @@ pub async fn listening(world: Arc<World>) -> String {
             post(comment),
         )
         .fallback(nothing_here)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&world),
+            dawdle,
+        ))
         .with_state(world);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -325,13 +448,32 @@ async fn tip(
     }
 }
 
-async fn protection(State(world): State<Arc<World>>) -> axum::Json<Value> {
+async fn protection(State(world): State<Arc<World>>) -> Response {
+    {
+        let mut left = world.protection_flakes_first.lock().expect("flakes");
+        if *left > 0 {
+            *left -= 1;
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({ "message": "No server is currently available" })),
+            )
+                .into_response();
+        }
+    }
+    if *world.protection_is_down.lock().expect("protection") {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "message": "No server is currently available" })),
+        )
+            .into_response();
+    }
     axum::Json(json!({
         "required_status_checks": { "contexts": world.required.lock().expect("required").clone() },
         "required_pull_request_reviews": {
             "required_approving_review_count": *world.required_approvals.lock().expect("approvals"),
         },
     }))
+    .into_response()
 }
 
 async fn rules() -> axum::Json<Value> {
@@ -374,15 +516,14 @@ fn shape(pull: &Pull) -> Value {
 
 async fn reviews(
     State(world): State<Arc<World>>,
-    Path((_owner, _repo, _number)): Path<(String, String, i32)>,
+    Path((_owner, _repo, number)): Path<(String, String, i32)>,
 ) -> axum::Json<Value> {
     let how_many = *world.approvals.lock().expect("approvals");
     let head = world
         .pulls
         .lock()
         .expect("pulls")
-        .values()
-        .next()
+        .get(&number)
         .map(|pull| pull.head.clone())
         .unwrap_or_default();
     axum::Json(Value::Array(
@@ -450,6 +591,7 @@ async fn make_ref(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    world.made_branches.lock().expect("made").push(name.clone());
     world.branches.lock().expect("branches").insert(name, sha);
     axum::Json(json!({}))
 }
@@ -480,20 +622,33 @@ async fn drop_ref(
 async fn merge_into(
     State(world): State<Arc<World>>,
     axum::Json(body): axum::Json<Value>,
-) -> axum::Json<Value> {
+) -> Response {
     let base = body
         .get("base")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
     let head = body.get("head").and_then(Value::as_str).unwrap_or_default();
+    if world
+        .heads_that_conflict
+        .lock()
+        .expect("conflicts")
+        .iter()
+        .any(|refused| refused == head)
+    {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(json!({ "message": "Merge conflict" })),
+        )
+            .into_response();
+    }
     let candidate = format!("candidate-of-{head}");
     world
         .branches
         .lock()
         .expect("branches")
         .insert(base, candidate.clone());
-    axum::Json(json!({ "sha": candidate }))
+    axum::Json(json!({ "sha": candidate })).into_response()
 }
 
 async fn pulls_for_head(State(world): State<Arc<World>>) -> axum::Json<Value> {
@@ -536,7 +691,19 @@ async fn merge(
     State(world): State<Arc<World>>,
     Path((_owner, _repo, number)): Path<(String, String, i32)>,
     axum::Json(body): axum::Json<Value>,
-) -> axum::Json<Value> {
+) -> Response {
+    if world
+        .merges_it_refuses
+        .lock()
+        .expect("refusals")
+        .contains(&number)
+    {
+        return (
+            axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            axum::Json(json!({ "message": "Pull Request is not mergeable" })),
+        )
+            .into_response();
+    }
     let method = body
         .get("merge_method")
         .and_then(Value::as_str)
@@ -557,7 +724,38 @@ async fn merge(
     if let Some(pull) = world.pulls.lock().expect("pulls").get_mut(&number) {
         pull.merged = true;
     }
-    axum::Json(json!({ "sha": landed }))
+    axum::Json(json!({ "sha": landed })).into_response()
+}
+
+async fn who_the_app_is(State(world): State<Arc<World>>) -> Response {
+    if *world.app_is_gone.lock().expect("app") {
+        return nothing_here().await.into_response();
+    }
+    axum::Json(json!({
+        "slug": "merge-queue",
+        "owner": { "login": OWNER, "type": "Organization" },
+    }))
+    .into_response()
+}
+
+async fn where_the_webhook_points(State(world): State<Arc<World>>) -> Response {
+    if *world.app_is_gone.lock().expect("app") {
+        return nothing_here().await.into_response();
+    }
+    axum::Json(json!({ "url": world.webhook_url.lock().expect("webhook").clone() })).into_response()
+}
+
+async fn point_the_webhook(
+    State(world): State<Arc<World>>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    if *world.app_is_gone.lock().expect("app") {
+        return nothing_here().await.into_response();
+    }
+    if let Some(url) = body.get("url").and_then(Value::as_str) {
+        *world.webhook_url.lock().expect("webhook") = url.to_owned();
+    }
+    axum::Json(json!({ "url": world.webhook_url.lock().expect("webhook").clone() })).into_response()
 }
 
 async fn publish(
@@ -577,6 +775,10 @@ async fn publish(
         body.get("conclusion")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        body.get("details_url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
     ));
     axum::Json(json!({ "id": 1 }))
 }

@@ -1,6 +1,6 @@
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use goat_merge_core::config::{FILE, LABEL};
 use goat_merge_core::{CHECK_NAME, MergeMethod};
 use serde::Deserialize;
@@ -17,7 +17,6 @@ use crate::store::credentials::AppCredentials;
 pub async fn manifest(State(engine): State<Engine>) -> Response {
     let settings = &engine.settings;
     let manifest = json!({
-        "name": "APP_NAME",
         "url": settings.public_url,
         "hook_attributes": { "url": settings.webhook_url(), "active": true },
         "redirect_url": settings.setup_url(),
@@ -25,7 +24,7 @@ pub async fn manifest(State(engine): State<Engine>) -> Response {
         "setup_url": settings.callback_url(),
         "request_oauth_on_install": true,
         "setup_on_update": false,
-        "public": false,
+        "public": true,
         "default_permissions": {
             "metadata": "read",
             "contents": "write",
@@ -44,8 +43,7 @@ pub async fn manifest(State(engine): State<Engine>) -> Response {
         ],
     });
     Answer(json!({
-        "personal": format!("{}/settings/apps/new", settings.github_web),
-        "organization": format!("{}/organizations/ORG/settings/apps/new", settings.github_web),
+        "where": format!("{}/settings/apps/new", settings.github_web),
         "manifest": manifest.to_string(),
         "already_set_up": engine.github.is_set_up(),
     }))
@@ -125,11 +123,28 @@ async fn taking_the_new_app(
         })?;
     engine.github.adopt(auth);
 
-    Ok(Redirect::to(&format!(
-        "{}/apps/{}/installations/new",
-        engine.settings.github_web, converted.slug
-    ))
-    .into_response())
+    where_somebody_installs_it(engine, &converted.slug)
+}
+
+pub async fn install(State(engine): State<Engine>) -> Response {
+    match engine.store.app_credentials().await {
+        Ok(Some(app)) => match where_somebody_installs_it(&engine, &app.slug) {
+            Ok(response) => response,
+            Err(fault) => fault.told_to_the_browser(),
+        },
+        Ok(None) => Fault::NotSetUp.told_to_the_browser(),
+        Err(problem) => Fault::from(problem).told_to_the_browser(),
+    }
+}
+
+fn where_somebody_installs_it(engine: &Engine, slug: &str) -> Result<Response, Fault> {
+    super::auth::a_state_to_come_back_with(
+        &engine.settings,
+        &format!(
+            "{}/apps/{slug}/installations/new?state=",
+            engine.settings.github_web
+        ),
+    )
 }
 
 pub async fn diagnose(
@@ -241,6 +256,7 @@ fn advice(protected: bool, enforced: bool, methods: usize, label: bool) -> Vec<V
 pub struct HowToEnable {
     branch: Option<String>,
     merge_method: Option<MergeMethod>,
+    batch_size: Option<usize>,
     write_config: Option<bool>,
 }
 
@@ -272,7 +288,15 @@ pub async fn enable(
 
     let mut opened = None;
     if how.write_config.unwrap_or(false) {
-        opened = Some(self_serve_config(&engine, who, &full, &branch, how.merge_method).await?);
+        opened = self_serve_config(
+            &engine,
+            who,
+            &full,
+            &branch,
+            how.merge_method,
+            how.batch_size,
+        )
+        .await?;
     }
 
     engine
@@ -300,13 +324,20 @@ async fn self_serve_config(
     full: &str,
     branch: &str,
     method: Option<MergeMethod>,
-) -> Result<i32, Fault> {
+    batch_size: Option<usize>,
+) -> Result<Option<i32>, Fault> {
+    if already_says_so(engine, who, full, branch).await? {
+        return Ok(None);
+    }
     let tip = engine.github.branch_tip(who, full, branch).await?;
     let working = "merge-queue/setup";
     engine.github.make_branch(who, full, working, &tip).await?;
     let mut written = format!("version: 1\n\nqueues:\n  - branch: {branch}\n");
     if let Some(method) = method {
         written.push_str(&format!("    merge_method: {method}\n"));
+    }
+    if let Some(most) = batch_size {
+        written.push_str(&format!("    batch_size: {most}\n"));
     }
     engine
         .github
@@ -334,7 +365,20 @@ async fn self_serve_config(
             ),
         )
         .await?;
-    Ok(opened.number)
+    Ok(Some(opened.number))
+}
+
+async fn already_says_so(
+    engine: &Engine,
+    who: As,
+    full: &str,
+    branch: &str,
+) -> Result<bool, Fault> {
+    let Some(written) = engine.github.file(who, full, FILE, branch).await? else {
+        return Ok(false);
+    };
+    Ok(goat_merge_core::Config::parse(&written)
+        .is_ok_and(|config| config.queue_for(branch).is_some()))
 }
 
 pub async fn disable(

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Standing } from "@/entities/queue-entry";
 import { WhatWeHave } from "@/entities/trouble";
 import { PullActions } from "@/features/pull-actions";
-import type { Timeline, Trial } from "@/shared/api";
+import type { QueueView, Row, Timeline, Trial } from "@/shared/api";
 import { api } from "@/shared/api";
 import { ago, cn, useAsked } from "@/shared/lib";
 import { Empty, Well } from "@/shared/ui";
@@ -15,12 +15,14 @@ export function DetailPanel({
   owner,
   name,
   number,
+  queue,
   beat,
   onChanged,
 }: {
   owner: string;
   name: string;
   number: number | null;
+  queue: QueueView | null;
   beat: number;
   onChanged: () => void;
 }) {
@@ -34,8 +36,14 @@ export function DetailPanel({
   if (number === null) {
     return (
       <Beside>
-        <div className="h-header shrink-0" />
-        <Empty>Pick a pull request to see why it is where it is.</Empty>
+        <div className="flex h-header shrink-0 items-center px-4">
+          <h2 className="text-caption uppercase text-ink-faint">This queue</h2>
+        </div>
+        {queue ? (
+          <HowItStands queue={queue} />
+        ) : (
+          <Empty>Pick a pull request to see why it is where it is.</Empty>
+        )}
       </Beside>
     );
   }
@@ -66,14 +74,14 @@ export function DetailPanel({
         {(said) =>
           said === null ? null : (
             <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
+              <div className="space-y-1">
+                <p className="font-mono text-mono text-ink-faint">#{said.entry.pull_request}</p>
+                <h2 className="text-heading text-ink">{said.entry.title || "untitled"}</h2>
+                <p className="text-ui text-ink-faint">asked by {said.entry.requested_by}</p>
+              </div>
+
               {tab === "detail" ? (
                 <>
-                  <div className="space-y-1">
-                    <p className="font-mono text-mono text-ink-faint">#{said.entry.pull_request}</p>
-                    <h2 className="text-heading text-ink">{said.entry.title || "untitled"}</h2>
-                    <p className="text-ui text-ink-faint">asked by {said.entry.requested_by}</p>
-                  </div>
-
                   <Well>
                     <Standing status={said.entry.status} />
                     <p className="text-ui">{said.entry.detail}</p>
@@ -108,9 +116,14 @@ export function DetailPanel({
                   {said.timeline.length === 0 ? <Empty>Nothing has happened yet.</Empty> : null}
                   {said.timeline.map((note) => (
                     <li key={`${note.at}-${note.action}`} className="text-ui">
-                      <p>
-                        <span className="text-ink">{note.actor}</span>{" "}
-                        <span className="text-ink-faint">{note.action}</span>
+                      <p className="flex items-baseline justify-between gap-3">
+                        <span className="min-w-0">
+                          <span className="text-ink">{note.actor}</span>{" "}
+                          <span className="text-ink-faint">{note.action}</span>
+                        </span>
+                        <span className="shrink-0 tabular-nums text-ink-faint">
+                          {ago(note.at)} ago
+                        </span>
                       </p>
                       {note.detail ? <p className="text-ink-faint">{note.detail}</p> : null}
                     </li>
@@ -122,6 +135,51 @@ export function DetailPanel({
         }
       </WhatWeHave>
     </Beside>
+  );
+}
+
+function HowItStands({ queue }: { queue: QueueView }) {
+  const running = queue.entries.filter((row: Row) => row.settled_at === null);
+  const head = running.at(0);
+  const blocked = running.filter((row: Row) => row.status === "Blocked");
+
+  return (
+    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 text-ui">
+      <p className="text-ink">
+        {running.length === 0
+          ? "Nothing is in this queue."
+          : `${running.length} pull ${running.length === 1 ? "request is" : "requests are"} in this queue.`}
+      </p>
+
+      {head ? (
+        <Well>
+          <p className="font-mono text-mono text-ink-faint">#{head.pull_request}</p>
+          <Standing status={head.status} />
+          <p className="text-ink-faint">{head.detail}</p>
+          <p className="text-ink-faint">waiting {ago(head.requested_at)}</p>
+        </Well>
+      ) : null}
+
+      {queue.paused ? (
+        <p className="text-warning">
+          The queue is paused by {queue.paused_by ?? "someone"}, so nothing will merge until it is
+          resumed.
+        </p>
+      ) : null}
+
+      {blocked.length > 0 ? (
+        <p className="text-ink-faint">
+          {blocked.length} {blocked.length === 1 ? "is" : "are"} blocked and will not move until
+          somebody sees to them.
+        </p>
+      ) : null}
+
+      {running.length > 0 ? (
+        <p className="text-ink-faint">
+          Pick a pull request to see which base it was verified against.
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -148,7 +206,7 @@ function Attempt({ attempt, owner, name }: { attempt: Trial; owner: string; name
     <Well className="text-ui">
       <div className="flex items-center justify-between">
         <span className="font-mono text-mono text-ink-faint">
-          {attempt.head.slice(0, 7)} on {attempt.base.slice(0, 7)}
+          {attempt.aboard.map((number) => `#${number}`).join(", ")} on {attempt.base.slice(0, 7)}
         </span>
         <span className={conclusions[attempt.conclusion] ?? "text-ink-faint"}>
           {attempt.conclusion}
@@ -164,11 +222,19 @@ function Attempt({ attempt, owner, name }: { attempt: Trial; owner: string; name
           candidate #{attempt.candidate_pull_request}
         </a>
       ) : null}
+      {attempt.assuming.length > 0 ? (
+        <p className="text-ink-faint">
+          built assuming {attempt.assuming.map((number) => `#${number}`).join(", ")} land first
+        </p>
+      ) : null}
       {attempt.failed_checks.map((check) => (
         <p key={check} className="text-danger">
           {check}
         </p>
       ))}
+      {attempt.discarded_because && attempt.conclusion !== "success" ? (
+        <p className="text-ink-faint">thrown away because {attempt.discarded_because}</p>
+      ) : null}
       <p className="text-ink-faint">started {ago(attempt.started_at)} ago</p>
     </Well>
   );

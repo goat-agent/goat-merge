@@ -28,6 +28,7 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let engine = Engine::new(store, github, Arc::clone(&settings));
+    engine.catch_the_app_up_with_our_address().await;
 
     let working = engine.clone();
     tokio::spawn(async move { working.work_until_stopped().await });

@@ -1,4 +1,6 @@
 export { Badge } from "./Badge";
+export type { Point } from "./Bars";
+export { Columns, Ranked } from "./Bars";
 export { Button } from "./Button";
 export { Code } from "./Code";
 export { Empty } from "./Empty";
@@ -6,6 +8,7 @@ export { Field } from "./Field";
 export { Figure } from "./Figure";
 export { PageBody } from "./PageBody";
 export { Panel } from "./Panel";
+export type { Choice } from "./Select";
 export { Select } from "./Select";
 export { Waiting } from "./Waiting";
 export { Well } from "./Well";

@@ -1,1 +1,1 @@
-export { useRepositories } from "./model";
+export { itsQueue, useRepositories, whereItLives, whereToStart } from "./model";

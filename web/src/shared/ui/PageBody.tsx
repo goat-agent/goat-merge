@@ -13,7 +13,7 @@ export function PageBody({
 }) {
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col overflow-y-auto", padded && "p-6")}>
-      <div className={cn("flex min-h-0 flex-1 flex-col", narrow && "mx-auto w-full max-w-measure")}>
+      <div className={cn("flex min-h-0 flex-1 flex-col", narrow && "w-full max-w-measure")}>
         {children}
       </div>
     </div>

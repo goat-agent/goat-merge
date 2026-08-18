@@ -1,67 +1,66 @@
-import { Zap } from "lucide-react";
+import { Children, type ReactNode } from "react";
 
-import { Standing } from "@/entities/queue-entry";
+import { EntryLine } from "@/entities/queue-entry";
 import type { Row } from "@/shared/api";
-import { ago, between, cn } from "@/shared/lib";
-import { Empty } from "@/shared/ui";
 
-type Placed = { row: Row; place: number | null };
-
-function placed(rows: Row[], numbered: boolean): Placed[] {
-  let next = 0;
-  return rows.map((row) => {
-    const running = numbered && row.queued_at !== null && row.settled_at === null;
-    if (running) next += 1;
-    return { row, place: running ? next : null };
-  });
+function saidByEveryone(rows: Row[]): string | null {
+  if (rows.length < 2) return null;
+  const first = rows[0]?.detail ?? "";
+  if (!first) return null;
+  return rows.every((row) => row.detail === first) ? first : null;
 }
 
 export function QueueBoard({
+  label,
+  note,
   rows,
   chosen,
   onChoose,
-  numbered = true,
+  numbered = false,
+  shows = "everything",
+  nothing,
+  aside,
+  children,
 }: {
+  label: string;
+  note?: string;
   rows: Row[];
   chosen: number | null;
   onChoose: (pullRequest: number) => void;
   numbered?: boolean;
+  shows?: "identity" | "everything";
+  nothing: string;
+  aside?: ReactNode;
+  children?: ReactNode;
 }) {
-  if (rows.length === 0) {
-    return <Empty>Nothing is in this queue.</Empty>;
-  }
-
+  const everyone = saidByEveryone(rows);
   return (
-    <ul>
-      {placed(rows, numbered).map(({ row, place }) => (
-        <li key={row.pull_request} className="border-b border-hairline last:border-b-0">
-          <button
-            type="button"
-            onClick={() => onChoose(row.pull_request)}
-            aria-current={chosen === row.pull_request}
-            className={cn(
-              "flex w-full items-center gap-3 px-4 py-2 text-left text-ui transition-colors",
-              chosen === row.pull_request ? "bg-fill-active" : "hover:bg-fill-hover",
-            )}
-          >
-            {numbered ? (
-              <span className="w-place shrink-0 text-right tabular-nums text-ink-faint">
-                {place ?? "—"}
-              </span>
-            ) : null}
-            <span className="w-number shrink-0 font-mono text-ink-faint">#{row.pull_request}</span>
-            <span className="min-w-0 flex-1 truncate text-ink">{row.title || "untitled"}</span>
-            {row.expedited_by ? <Zap className="size-3.5 shrink-0 text-warning" /> : null}
-            <span className="w-detail-column shrink-0 truncate text-ink-faint">{row.detail}</span>
-            <span className="w-standing shrink-0">
-              <Standing status={row.status} />
-            </span>
-            <span className="w-waited shrink-0 text-right tabular-nums text-ink-faint">
-              {row.settled_at ? between(row.requested_at, row.settled_at) : ago(row.requested_at)}
-            </span>
-          </button>
-        </li>
-      ))}
-    </ul>
+    <section>
+      <header className="flex h-header items-center gap-3 px-4">
+        <h2 className="text-caption uppercase text-ink-faint">{label}</h2>
+        {note ? <span className="text-ui text-ink-faint">{note}</span> : null}
+        {everyone ? <span className="text-ui text-ink-faint">{everyone}</span> : null}
+        <span className="flex-1" />
+        {aside}
+      </header>
+      {children}
+      {rows.length === 0 && Children.count(children) === 0 ? (
+        <p className="border-b border-hairline px-4 pb-4 text-ui text-ink-faint">{nothing}</p>
+      ) : null}
+      {rows.length > 0 ? (
+        <ul className="border-b border-hairline">
+          {rows.map((row, at) => (
+            <EntryLine
+              key={row.pull_request}
+              row={row}
+              {...(numbered ? { place: at + 1 } : {})}
+              chosen={chosen}
+              onChoose={onChoose}
+              shows={everyone ? "identity" : shows}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </section>
   );
 }

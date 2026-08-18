@@ -1,6 +1,7 @@
 mod support;
 
 use goat_merge::store::credentials::AppCredentials;
+use goat_merge::store::queue::StandingOn;
 use goat_merge::store::{Seal, fresh_key, key_from_hex};
 use support::{a_repository, a_seal, a_store, a_store_sealed_with};
 use time::Duration;
@@ -96,7 +97,13 @@ async fn a_pull_request_goes_in_waits_and_settles() {
         .await
         .expect("a status");
     store
-        .settle(entry.id, "Merged", "merged", Some("merged-sha"))
+        .settle(
+            entry.id,
+            "Merged",
+            "merged",
+            Some("merged-sha"),
+            Some("head-one"),
+        )
         .await
         .expect("a settlement");
 
@@ -173,7 +180,14 @@ async fn re_entering_clears_an_earlier_result_without_losing_the_attempts() {
         .await
         .expect("an entry");
     let attempt = store
-        .open_attempt(entry.id, "base-one", "head-one", "merge-queue/candidate-1")
+        .open_attempt(
+            queue.id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(entry.id, "head-one".to_owned())],
+            None,
+            None,
+        )
         .await
         .expect("an attempt");
     store
@@ -181,7 +195,7 @@ async fn re_entering_clears_an_earlier_result_without_losing_the_attempts() {
         .await
         .expect("a conclusion");
     store
-        .settle(entry.id, "Failed", "check test failed", None)
+        .settle(entry.id, "Failed", "check test failed", None, None)
         .await
         .expect("a settlement");
 
@@ -193,7 +207,7 @@ async fn re_entering_clears_an_earlier_result_without_losing_the_attempts() {
     assert_eq!(again.settled_at, None);
     assert_eq!(
         store
-            .attempts_of(entry.id)
+            .attempts_carrying(entry.id)
             .await
             .expect("the attempts")
             .len(),
@@ -216,12 +230,19 @@ async fn a_discarded_attempt_stops_being_the_live_one() {
         .expect("an entry");
 
     let stale = store
-        .open_attempt(entry.id, "base-one", "head-one", "merge-queue/candidate-1")
+        .open_attempt(
+            queue.id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(entry.id, "head-one".to_owned())],
+            None,
+            None,
+        )
         .await
         .expect("an attempt");
     assert_eq!(
         store
-            .live_attempt(entry.id)
+            .verification_carrying(entry.id)
             .await
             .expect("the live attempt")
             .map(|a| a.id),
@@ -234,12 +255,15 @@ async fn a_discarded_attempt_stops_being_the_live_one() {
         .expect("a discard");
 
     assert_eq!(
-        store.live_attempt(entry.id).await.expect("no live attempt"),
+        store
+            .verification_carrying(entry.id)
+            .await
+            .expect("no live attempt"),
         None
     );
     assert_eq!(
         store
-            .attempts_of(entry.id)
+            .attempts_carrying(entry.id)
             .await
             .expect("the attempts")
             .len(),
@@ -336,5 +360,473 @@ async fn a_worker_that_died_holding_a_job_does_not_keep_it_forever() {
     assert!(
         store.claim_a_job("two").await.expect("a claim").is_some(),
         "after a restart the work has to be picked up again"
+    );
+}
+
+#[tokio::test]
+async fn a_job_asked_for_again_while_it_ran_runs_again() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+
+    store
+        .ask_for("sweep", "acme/api")
+        .await
+        .expect("somebody asks while it is running");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_some(),
+        "a request that arrived while the job ran must survive the job finishing"
+    );
+}
+
+#[tokio::test]
+async fn a_job_asked_for_later_while_it_ran_keeps_the_delay() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+
+    store
+        .ask_for_later("sweep", "acme/api", Duration::minutes(5))
+        .await
+        .expect("the job asks to be looked at again in a while");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_none(),
+        "a job that asked to run again later must not run again straight away"
+    );
+}
+
+#[tokio::test]
+async fn the_soonest_of_two_requests_made_while_it_ran_is_the_one_that_wins() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+
+    store
+        .ask_for_later("sweep", "acme/api", Duration::minutes(5))
+        .await
+        .expect("the job asks to be looked at again in a while");
+    store
+        .ask_for("sweep", "acme/api")
+        .await
+        .expect("a webhook arrives before that while is up");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_some(),
+        "news that arrived while the job ran must not wait behind the job's own longer wait"
+    );
+}
+
+#[tokio::test]
+async fn asking_twice_while_it_ran_only_runs_it_once_more() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+
+    store.ask_for("sweep", "acme/api").await.expect("once");
+    store.ask_for("sweep", "acme/api").await.expect("twice");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    let again = store
+        .claim_a_job("two")
+        .await
+        .expect("a claim")
+        .expect("the one job those two requests became");
+    store.job_is_done(again.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_none(),
+        "two requests for the same work are one job, not two"
+    );
+}
+
+#[tokio::test]
+async fn a_job_nobody_asked_for_again_is_cleared() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    assert!(
+        store.claim_a_job("two").await.expect("a claim").is_none(),
+        "work nobody asked for again is finished with"
+    );
+}
+
+#[tokio::test]
+async fn a_job_asked_for_again_does_not_carry_the_last_run_s_attempts() {
+    let Some(store) = a_store().await else { return };
+    let _alone = support::alone_with_the_jobs(&store).await;
+
+    store.ask_for("sweep", "acme/api").await.expect("a job");
+    let job = store
+        .claim_a_job("one")
+        .await
+        .expect("a claim")
+        .expect("the job we just asked for");
+    store
+        .ask_for("sweep", "acme/api")
+        .await
+        .expect("somebody asks while it is running");
+    store.job_is_done(job.id).await.expect("it finished");
+
+    let again = store
+        .claim_a_job("two")
+        .await
+        .expect("a claim")
+        .expect("the work that was asked for again");
+
+    assert_eq!(
+        again.attempts, 1,
+        "how long a failure waits must depend on how often this work has failed, not on how \
+         busy the queue has been"
+    );
+}
+
+#[tokio::test]
+async fn throwing_the_same_verification_away_twice_keeps_the_first_reason() {
+    let Some(store) = a_store().await else { return };
+    let repository = a_repository(&store).await;
+    let queue = store
+        .queue_for(repository.id, "main")
+        .await
+        .expect("a queue");
+    let entry = store
+        .enter(queue.id, 9, "frank", "a change")
+        .await
+        .expect("an entry");
+    let attempt = store
+        .open_attempt(
+            queue.id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(entry.id, "head-one".to_owned())],
+            None,
+            None,
+        )
+        .await
+        .expect("an attempt");
+
+    store
+        .discard_attempt(attempt.id, "the base moved")
+        .await
+        .expect("thrown away");
+    store
+        .discard_attempt(attempt.id, "everyone it was verifying left the queue")
+        .await
+        .expect("thrown away again");
+
+    let told = store
+        .what_last_failed_assuming(queue.id, &[])
+        .await
+        .expect("the verification")
+        .expect("the one we opened");
+    assert_eq!(
+        told.discarded_because.as_deref(),
+        Some("the base moved"),
+        "a retry must not rewrite why something was thrown away the first time"
+    );
+}
+
+async fn a_queue_with_two_entries(store: &goat_merge::store::Store) -> (i64, i64, i64) {
+    let repository = a_repository(store).await;
+    let queue = store
+        .queue_for(repository.id, "main")
+        .await
+        .expect("a queue");
+    let first = store
+        .enter(queue.id, 1, "frank", "the one ahead")
+        .await
+        .expect("an entry");
+    let second = store
+        .enter(queue.id, 2, "danah", "the one behind")
+        .await
+        .expect("an entry");
+    (queue.id, first.id, second.id)
+}
+
+#[tokio::test]
+async fn a_candidate_built_on_another_remembers_what_it_assumed() {
+    let Some(store) = a_store().await else { return };
+    let (queue_id, ahead, behind) = a_queue_with_two_entries(&store).await;
+
+    let first = store
+        .open_attempt(
+            queue_id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(ahead, "head-ahead".to_owned())],
+            None,
+            None,
+        )
+        .await
+        .expect("the one in front");
+    let second = store
+        .open_attempt(
+            queue_id,
+            "candidate-one",
+            "merge-queue/candidate-2",
+            &[(behind, "head-behind".to_owned())],
+            None,
+            Some(StandingOn {
+                attempt: &first,
+                assumed: &[(ahead, "head-ahead".to_owned())],
+            }),
+        )
+        .await
+        .expect("the one built on it");
+
+    assert_eq!(second.built_on, Some(first.id));
+    assert_eq!(second.depth, 1);
+    assert_eq!(first.depth, 0);
+    let assumed = store
+        .what_it_assumed(second.id)
+        .await
+        .expect("what it assumed");
+    assert_eq!(
+        assumed
+            .iter()
+            .map(|one| one.pull_request)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert_eq!(assumed[0].head, "head-ahead");
+    assert!(
+        store
+            .everyone_aboard(second.id)
+            .await
+            .expect("who rode it")
+            .iter()
+            .all(|one| one.pull_request == 2),
+        "what a candidate assumed is not who rode it, and the two lists must not be confused"
+    );
+}
+
+#[tokio::test]
+async fn an_entry_rides_exactly_one_live_verification_however_many_are_in_flight() {
+    let Some(store) = a_store().await else { return };
+    let (queue_id, ahead, behind) = a_queue_with_two_entries(&store).await;
+
+    let first = store
+        .open_attempt(
+            queue_id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(ahead, "head-ahead".to_owned())],
+            None,
+            None,
+        )
+        .await
+        .expect("the one in front");
+    let second = store
+        .open_attempt(
+            queue_id,
+            "candidate-one",
+            "merge-queue/candidate-2",
+            &[(behind, "head-behind".to_owned())],
+            None,
+            Some(StandingOn {
+                attempt: &first,
+                assumed: &[(ahead, "head-ahead".to_owned())],
+            }),
+        )
+        .await
+        .expect("the one built on it");
+
+    let live = store
+        .live_attempts_on(queue_id)
+        .await
+        .expect("the live attempts");
+    assert_eq!(
+        live.iter().map(|one| one.id).collect::<Vec<_>>(),
+        vec![first.id, second.id],
+        "the chain reads from the branch outwards"
+    );
+    assert_eq!(
+        store
+            .verification_carrying(ahead)
+            .await
+            .expect("what carries it")
+            .map(|one| one.id),
+        Some(first.id)
+    );
+    assert_eq!(
+        store
+            .verification_carrying(behind)
+            .await
+            .expect("what carries it")
+            .map(|one| one.id),
+        Some(second.id)
+    );
+}
+
+#[tokio::test]
+async fn everything_built_on_a_candidate_comes_back_leaves_first() {
+    let Some(store) = a_store().await else { return };
+    let (queue_id, ahead, behind) = a_queue_with_two_entries(&store).await;
+
+    let first = store
+        .open_attempt(
+            queue_id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(ahead, "head-ahead".to_owned())],
+            None,
+            None,
+        )
+        .await
+        .expect("the one in front");
+    let second = store
+        .open_attempt(
+            queue_id,
+            "candidate-one",
+            "merge-queue/candidate-2",
+            &[(behind, "head-behind".to_owned())],
+            None,
+            Some(StandingOn {
+                attempt: &first,
+                assumed: &[(ahead, "head-ahead".to_owned())],
+            }),
+        )
+        .await
+        .expect("the one built on it");
+
+    let standing_on_it = store
+        .everything_built_on(first.id)
+        .await
+        .expect("what stands on it");
+
+    assert_eq!(
+        standing_on_it.iter().map(|one| one.id).collect::<Vec<_>>(),
+        vec![second.id],
+        "when the one in front fails, everything standing on it has to be thrown away, deepest \
+         first"
+    );
+    assert!(
+        store
+            .everything_built_on(second.id)
+            .await
+            .expect("what stands on it")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn what_a_candidate_narrows_is_only_ever_one_that_assumed_the_same_thing() {
+    let Some(store) = a_store().await else { return };
+    let (queue_id, ahead, behind) = a_queue_with_two_entries(&store).await;
+
+    let on_the_branch = store
+        .open_attempt(
+            queue_id,
+            "base-one",
+            "merge-queue/candidate-1",
+            &[(ahead, "head-ahead".to_owned())],
+            None,
+            None,
+        )
+        .await
+        .expect("one built on the branch itself");
+    store
+        .conclude_attempt(on_the_branch.id, "failure", &["test".to_owned()])
+        .await
+        .expect("a conclusion");
+    let speculative = store
+        .open_attempt(
+            queue_id,
+            "candidate-one",
+            "merge-queue/candidate-2",
+            &[(behind, "head-behind".to_owned())],
+            None,
+            Some(StandingOn {
+                attempt: &on_the_branch,
+                assumed: &[(ahead, "head-ahead".to_owned())],
+            }),
+        )
+        .await
+        .expect("one built on top of it");
+    store
+        .conclude_attempt(speculative.id, "failure", &["test".to_owned()])
+        .await
+        .expect("a conclusion");
+
+    assert_eq!(
+        store
+            .what_last_failed_assuming(queue_id, &[])
+            .await
+            .expect("a lookup")
+            .map(|one| one.id),
+        Some(on_the_branch.id),
+        "a candidate on the branch is not narrowing one that assumed somebody else's work"
+    );
+    assert_eq!(
+        store
+            .what_last_failed_assuming(queue_id, &[ahead])
+            .await
+            .expect("a lookup")
+            .map(|one| one.id),
+        Some(speculative.id)
+    );
+}
+
+#[tokio::test]
+async fn a_merge_remembers_the_head_that_was_merged() {
+    let Some(store) = a_store().await else { return };
+    let (queue_id, ahead, _) = a_queue_with_two_entries(&store).await;
+
+    store
+        .settle(
+            ahead,
+            "Merged",
+            "merged as abc1234",
+            Some("abc1234"),
+            Some("head-ahead"),
+        )
+        .await
+        .expect("a settlement");
+
+    let entry = store
+        .entry(queue_id, 1)
+        .await
+        .expect("the entry")
+        .expect("the one we settled");
+    assert_eq!(
+        entry.merged_head.as_deref(),
+        Some("head-ahead"),
+        "proving an assumption held means knowing which head landed, not only which commit"
     );
 }

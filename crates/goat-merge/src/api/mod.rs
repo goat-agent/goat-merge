@@ -77,6 +77,7 @@ pub fn router() -> Router<Engine> {
         .route("/auth/github/callback", get(auth::callback))
         .route("/auth/logout", post(auth::logout))
         .route("/setup/github", get(setup::app_was_created))
+        .route("/setup/install", get(setup::install))
         .method_not_allowed_fallback(nowhere)
 }
 

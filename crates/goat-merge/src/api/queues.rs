@@ -13,7 +13,7 @@ use super::auth::{Standing, must_be_at_least, what_this_person_may_do, whoever_i
 use super::{Answer, Fault, Named, Sent, Wanting};
 use crate::engine::Engine;
 use crate::github::As;
-use crate::store::queue::{Attempt, Entry, Queue};
+use crate::store::queue::{Attempt, Entry, Member, Queue};
 use crate::store::repositories::Repository;
 
 #[derive(Debug, Serialize)]
@@ -37,8 +37,14 @@ pub struct Row {
 
 #[derive(Debug, Serialize)]
 pub struct Trial {
+    pub id: i64,
     pub base: String,
-    pub head: String,
+    pub aboard: Vec<i32>,
+    pub assuming: Vec<i32>,
+    pub depth: i32,
+    pub built_on: Option<i64>,
+    pub narrowed_from: Option<i64>,
+    pub discarded_because: Option<String>,
     pub candidate_branch: String,
     pub candidate_pull_request: Option<i32>,
     pub candidate_sha: Option<String>,
@@ -46,24 +52,81 @@ pub struct Trial {
     pub failed_checks: Vec<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub finished_at: Option<OffsetDateTime>,
 }
 
-impl From<Attempt> for Trial {
-    fn from(attempt: Attempt) -> Self {
+impl Trial {
+    fn of(attempt: Attempt, aboard: Vec<Member>, assuming: Vec<i32>) -> Self {
         Self {
+            id: attempt.id,
             base: attempt.base,
-            head: attempt.head,
+            aboard: aboard.into_iter().map(|one| one.pull_request).collect(),
+            assuming,
+            depth: attempt.depth,
+            built_on: attempt.built_on,
+            narrowed_from: attempt.narrowed_from,
+            discarded_because: attempt.discarded_because,
             candidate_branch: attempt.candidate_branch,
             candidate_pull_request: attempt.candidate_pull_request,
             candidate_sha: attempt.candidate_sha,
             conclusion: attempt.conclusion,
             failed_checks: attempt.failed_checks,
             started_at: attempt.started_at,
+            finished_at: attempt.finished_at,
         }
     }
 }
 
-fn row(entry: Entry, attempt: Option<Attempt>) -> Row {
+async fn what_it_rode(engine: &Engine, entry_id: i64) -> Result<Option<Trial>, Fault> {
+    let Some(attempt) = engine.store.verification_carrying(entry_id).await? else {
+        return Ok(None);
+    };
+    let aboard = engine.store.everyone_aboard(attempt.id).await?;
+    let assuming = what_it_assumed(engine, attempt.id).await?;
+    Ok(Some(Trial::of(attempt, aboard, assuming)))
+}
+
+async fn what_it_assumed(engine: &Engine, attempt_id: i64) -> Result<Vec<i32>, Fault> {
+    Ok(engine
+        .store
+        .what_it_assumed(attempt_id)
+        .await?
+        .into_iter()
+        .map(|one| one.pull_request)
+        .collect())
+}
+
+async fn what_they_rode(engine: &Engine, entries: Vec<Entry>) -> Result<Vec<Row>, Fault> {
+    let ids: Vec<i64> = entries.iter().map(|entry| entry.id).collect();
+    let rode = engine.store.what_each_of_them_last_rode(&ids).await?;
+    let mut aboard = std::collections::HashMap::new();
+    let mut assuming = std::collections::HashMap::new();
+    for one in &rode {
+        if let std::collections::hash_map::Entry::Vacant(empty) = aboard.entry(one.attempt.id) {
+            empty.insert(engine.store.everyone_aboard(one.attempt.id).await?);
+            assuming.insert(
+                one.attempt.id,
+                what_it_assumed(engine, one.attempt.id).await?,
+            );
+        }
+    }
+    let mut riders = std::collections::HashMap::new();
+    for one in rode {
+        let riding = aboard.get(&one.attempt.id).cloned().unwrap_or_default();
+        let assumed = assuming.get(&one.attempt.id).cloned().unwrap_or_default();
+        riders.insert(one.entry_id, Trial::of(one.attempt, riding, assumed));
+    }
+    Ok(entries
+        .into_iter()
+        .map(|entry| {
+            let rode = riders.remove(&entry.id);
+            row(entry, rode)
+        })
+        .collect())
+}
+
+fn row(entry: Entry, attempt: Option<Trial>) -> Row {
     Row {
         pull_request: entry.pull_request,
         title: entry.title,
@@ -76,7 +139,7 @@ fn row(entry: Entry, attempt: Option<Attempt>) -> Row {
         expedited_by: entry.expedited_by,
         expedite_note: entry.expedite_note,
         merged_sha: entry.merged_sha,
-        attempt: attempt.map(Trial::from),
+        attempt,
     }
 }
 
@@ -210,7 +273,7 @@ pub async fn one_queue(
     let queue = found_queue(&engine, &repository, &branch).await?;
     let mut rows = Vec::new();
     for entry in engine.store.running(queue.id).await? {
-        let attempt = engine.store.live_attempt(entry.id).await?;
+        let attempt = what_it_rode(&engine, entry.id).await?;
         rows.push(row(entry, attempt));
     }
     Ok(Answer(json!({
@@ -221,6 +284,10 @@ pub async fn one_queue(
         "paused": queue.paused,
         "paused_by": queue.paused_by,
         "base_sha": queue.base_sha,
+        "verify_at_once": queue.verify_at_once,
+        "verify_at_once_because": queue.verify_at_once_because,
+        "speculate_to": queue.speculate_to,
+        "speculate_to_because": queue.speculate_to_because,
         "entries": rows,
     }))
     .into_response())
@@ -243,7 +310,7 @@ pub async fn history(
         .store
         .history(queue.id, how_many.limit.unwrap_or(100).clamp(1, 500))
         .await?;
-    let rows: Vec<Row> = entries.into_iter().map(|entry| row(entry, None)).collect();
+    let rows = what_they_rode(&engine, entries).await?;
     Ok(Answer(rows).into_response())
 }
 
@@ -321,17 +388,22 @@ pub async fn one_pull(
 ) -> Result<Response, Fault> {
     let repository = found_for_reading(&engine, &headers, &owner, &name).await?;
     let entry = find_entry(&engine, &repository, number).await?;
-    let attempts = engine.store.attempts_of(entry.id).await?;
+    let mut attempts = Vec::new();
+    for attempt in engine.store.attempts_carrying(entry.id).await? {
+        let aboard = engine.store.everyone_aboard(attempt.id).await?;
+        let assuming = what_it_assumed(&engine, attempt.id).await?;
+        attempts.push(Trial::of(attempt, aboard, assuming));
+    }
     let notes = engine
         .store
         .what_happened_to(repository.id, Some(number), 100)
         .await?;
-    let live = engine.store.live_attempt(entry.id).await?;
+    let live = what_it_rode(&engine, entry.id).await?;
     Ok(Answer(json!({
         "entry": row(entry, live),
-        "attempts": attempts.into_iter().map(Trial::from).collect::<Vec<_>>(),
+        "attempts": attempts,
         "timeline": notes.into_iter().map(|note| json!({
-            "at": note.at.to_string(),
+            "at": note.at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
             "actor": note.actor,
             "action": note.action,
             "detail": note.detail,

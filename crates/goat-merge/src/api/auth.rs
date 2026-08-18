@@ -9,7 +9,25 @@ use crate::engine::Engine;
 use crate::github::As;
 use crate::store::sessions::Session;
 
-const STATE_COOKIE: &str = "goat_merge_state";
+pub(crate) const STATE_COOKIE: &str = "goat_merge_state";
+
+pub(crate) fn a_state_to_come_back_with(
+    settings: &crate::settings::Settings,
+    to: &str,
+) -> Result<Response, Fault> {
+    let state = crate::store::sessions::fresh_token();
+    let secure = settings.public_url.starts_with("https");
+    let mut response = Redirect::to(&format!("{to}{state}")).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        set_cookie(STATE_COOKIE, &state, secure, 600)
+            .parse()
+            .map_err(|problem| Fault::Broken {
+                incident: Incident::written_down("writing the sign-in cookie", &problem),
+            })?,
+    );
+    Ok(response)
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CameBack {
@@ -26,29 +44,27 @@ pub async fn begin(State(engine): State<Engine>) -> Response {
 }
 
 async fn starting_to_sign_in(engine: &Engine) -> Result<Response, Fault> {
+    if let Err(problem) = engine.github.who_we_are().await {
+        return Err(if problem.is_missing() {
+            Fault::AppIsGone
+        } else {
+            problem.into()
+        });
+    }
     let app = engine
         .store
         .app_credentials()
         .await?
         .ok_or(Fault::NotSetUp)?;
-    let state = crate::store::sessions::fresh_token();
-    let secure = engine.settings.public_url.starts_with("https");
-    let to = format!(
-        "{}/login/oauth/authorize?client_id={}&redirect_uri={}&state={state}",
-        engine.settings.github_web,
-        app.client_id,
-        engine.settings.callback_url()
-    );
-    let mut response = Redirect::to(&to).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        set_cookie(STATE_COOKIE, &state, secure, 600)
-            .parse()
-            .map_err(|problem| Fault::Broken {
-                incident: Incident::written_down("writing the sign-in cookie", &problem),
-            })?,
-    );
-    Ok(response)
+    a_state_to_come_back_with(
+        &engine.settings,
+        &format!(
+            "{}/login/oauth/authorize?client_id={}&redirect_uri={}&state=",
+            engine.settings.github_web,
+            app.client_id,
+            engine.settings.callback_url()
+        ),
+    )
 }
 
 pub async fn callback(
@@ -73,17 +89,11 @@ async fn coming_back_from_github(
         });
     };
     let just_installed = came_back.installation_id;
-    if just_installed.is_none() {
-        let Some(state) = came_back.state else {
-            return Err(Fault::GithubRefused {
-                said: "it sent no state back, so the sign-in could not be finished".to_owned(),
-            });
-        };
-        if cookie_in(headers, STATE_COOKIE).as_deref() != Some(state.as_str()) {
-            return Err(Fault::GithubRefused {
-                said: "this sign-in did not start here".to_owned(),
-            });
-        }
+    let Some(state) = came_back.state else {
+        return Err(Fault::DidNotStartHere);
+    };
+    if cookie_in(headers, STATE_COOKIE).as_deref() != Some(state.as_str()) {
+        return Err(Fault::DidNotStartHere);
     }
     let app = engine
         .store

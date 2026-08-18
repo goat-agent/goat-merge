@@ -1,18 +1,44 @@
 mod support;
 
 use goat_merge_core::{
-    Conclusion, Enqueue, InQueue, MergeMethod, Next, NotQueued, Queue, Sha, Status, Verification,
-    WhyBlocked, WhyFailed, WhyWaiting, decide,
+    Aboard, Assumed, Conclusion, Enqueue, HowItWent, InQueue, MergeMethod, Next, NotQueued, Queue,
+    Sha, Status, Verification, WhyBlocked, WhyFailed, WhyWaiting, after_a_batch, after_a_chain,
+    decide, how_deep_to_speculate, how_many_to_verify,
 };
+use std::sync::LazyLock;
+
 use support::{a_pull_request, oclock, passing};
 
 fn main_queue() -> Queue {
     Queue::following_github("main")
 }
 
-fn at_the_front<'a>() -> InQueue<'a> {
+static ALONE: LazyLock<Vec<Aboard>> = LazyLock::new(|| carrying(&[(4835, "head-one")]));
+static SOMEBODY_ELSE: LazyLock<Vec<Aboard>> =
+    LazyLock::new(|| carrying(&[(11, "head-of-another")]));
+
+fn carrying(who: &[(u64, &str)]) -> Vec<Aboard> {
+    who.iter()
+        .map(|(number, head)| Aboard {
+            number: *number,
+            head: Sha::from(*head),
+        })
+        .collect()
+}
+
+fn alone() -> &'static [Aboard] {
+    &ALONE
+}
+
+static NOBODY: LazyLock<Vec<Aboard>> = LazyLock::new(Vec::new);
+static BASE_ONE: LazyLock<Sha> = LazyLock::new(|| Sha::from("base-one"));
+
+fn at_the_front(aboard: &[Aboard]) -> InQueue<'_> {
     InQueue {
         ahead: 0,
+        aboard,
+        assuming: &NOBODY,
+        onto: &BASE_ONE,
         paused: false,
         verification: None,
     }
@@ -21,7 +47,8 @@ fn at_the_front<'a>() -> InQueue<'a> {
 fn verified(conclusion: Conclusion) -> Verification {
     Verification {
         base: Sha::from("base-one"),
-        head: Sha::from("head-one"),
+        aboard: ALONE.clone(),
+        assumed: Vec::new(),
         candidate: Sha::from("candidate-one"),
         conclusion,
         ran_out_of_time: false,
@@ -40,7 +67,7 @@ fn ran_out_of_time() -> Verification {
 fn an_unlabelled_pull_request_is_not_queued() {
     let snapshot = a_pull_request().without_the_label().done();
 
-    let decision = decide(&snapshot, &main_queue(), &at_the_front());
+    let decision = decide(&snapshot, &main_queue(), &at_the_front(alone()));
 
     assert_eq!(
         decision.status,
@@ -60,7 +87,7 @@ fn automatic_enqueue_needs_no_label() {
     };
 
     assert_eq!(
-        decide(&snapshot, &queue, &at_the_front()).status,
+        decide(&snapshot, &queue, &at_the_front(alone())).status,
         Status::Merging
     );
 }
@@ -70,7 +97,7 @@ fn a_paused_queue_holds_everything_that_is_ready() {
     let snapshot = a_pull_request().done();
     let entry = InQueue {
         paused: true,
-        ..at_the_front()
+        ..at_the_front(alone())
     };
 
     let decision = decide(&snapshot, &main_queue(), &entry);
@@ -84,7 +111,7 @@ fn a_pause_does_not_hide_why_a_pull_request_was_not_ready_anyway() {
     let snapshot = a_pull_request().that_is_a_draft().done();
     let entry = InQueue {
         paused: true,
-        ..at_the_front()
+        ..at_the_front(alone())
     };
 
     assert_eq!(
@@ -101,7 +128,7 @@ fn only_the_front_of_the_queue_does_any_work() {
         .done();
     let behind = InQueue {
         ahead: 3,
-        ..at_the_front()
+        ..at_the_front(&SOMEBODY_ELSE)
     };
 
     let decision = decide(&snapshot, &main_queue(), &behind);
@@ -121,14 +148,20 @@ fn the_front_of_a_busy_queue_builds_a_candidate_on_the_current_base() {
         .with_checks(vec![passing("test", "head-one", oclock(9, 30))])
         .done();
 
-    let decision = decide(&snapshot, &main_queue(), &at_the_front());
+    let decision = decide(&snapshot, &main_queue(), &at_the_front(alone()));
 
-    assert_eq!(decision.status, Status::Preparing);
+    assert_eq!(
+        decision.status,
+        Status::Preparing {
+            alongside: Vec::new(),
+            assuming: Vec::new()
+        }
+    );
     assert_eq!(
         decision.next,
         Next::BuildCandidate {
             onto: Sha::from("base-one"),
-            head: Sha::from("head-one")
+            aboard: ALONE.clone(),
         }
     );
 }
@@ -137,7 +170,7 @@ fn the_front_of_a_busy_queue_builds_a_candidate_on_the_current_base() {
 fn a_quiet_queue_merges_without_building_anything() {
     let snapshot = a_pull_request().done();
 
-    let decision = decide(&snapshot, &main_queue(), &at_the_front());
+    let decision = decide(&snapshot, &main_queue(), &at_the_front(alone()));
 
     assert_eq!(decision.status, Status::Merging);
     assert_eq!(
@@ -160,13 +193,19 @@ fn a_pull_request_whose_base_moved_is_revalidated_not_merged() {
     };
     let entry = InQueue {
         verification: Some(&stale),
-        ..at_the_front()
+        ..at_the_front(alone())
     };
 
     let decision = decide(&snapshot, &main_queue(), &entry);
 
     assert_eq!(decision.next, Next::DiscardVerification);
-    assert_eq!(decision.status, Status::Preparing);
+    assert_eq!(
+        decision.status,
+        Status::Preparing {
+            alongside: Vec::new(),
+            assuming: Vec::new()
+        }
+    );
 }
 
 #[test]
@@ -176,10 +215,11 @@ fn a_pull_request_whose_head_moved_is_revalidated_not_merged() {
         .whose_base_last_moved_at(oclock(11, 0))
         .with_checks(vec![passing("test", "head-two", oclock(11, 30))])
         .done();
+    let now_riding = carrying(&[(4835, "head-two")]);
     let stale = verified(Conclusion::Success);
     let entry = InQueue {
         verification: Some(&stale),
-        ..at_the_front()
+        ..at_the_front(&now_riding)
     };
 
     assert_eq!(
@@ -202,7 +242,7 @@ fn a_passing_verification_merges_by_the_configured_method() {
     let passed = verified(Conclusion::Success);
     let entry = InQueue {
         verification: Some(&passed),
-        ..at_the_front()
+        ..at_the_front(alone())
     };
 
     let decision = decide(&snapshot, &queue, &entry);
@@ -228,7 +268,7 @@ fn a_failing_verification_names_the_checks_that_failed() {
     };
     let entry = InQueue {
         verification: Some(&failed),
-        ..at_the_front()
+        ..at_the_front(alone())
     };
 
     let decision = decide(&snapshot, &main_queue(), &entry);
@@ -251,12 +291,18 @@ fn a_candidate_still_running_is_left_alone() {
     let running = verified(Conclusion::Pending);
     let entry = InQueue {
         verification: Some(&running),
-        ..at_the_front()
+        ..at_the_front(alone())
     };
 
     let decision = decide(&snapshot, &main_queue(), &entry);
 
-    assert_eq!(decision.status, Status::Validating);
+    assert_eq!(
+        decision.status,
+        Status::Validating {
+            alongside: Vec::new(),
+            assuming: Vec::new()
+        }
+    );
     assert_eq!(decision.next, Next::Nothing);
 }
 
@@ -265,7 +311,7 @@ fn a_repository_allowing_one_merge_method_needs_no_configuration() {
     let snapshot = a_pull_request().allowing(vec![MergeMethod::Rebase]).done();
 
     assert_eq!(
-        decide(&snapshot, &main_queue(), &at_the_front()).next,
+        decide(&snapshot, &main_queue(), &at_the_front(alone())).next,
         Next::Merge {
             method: MergeMethod::Rebase
         }
@@ -277,7 +323,7 @@ fn a_repository_allowing_several_asks_which_one() {
     let allowed = vec![MergeMethod::Merge, MergeMethod::Squash];
     let snapshot = a_pull_request().allowing(allowed.clone()).done();
 
-    let decision = decide(&snapshot, &main_queue(), &at_the_front());
+    let decision = decide(&snapshot, &main_queue(), &at_the_front(alone()));
 
     assert_eq!(
         decision.status,
@@ -299,7 +345,7 @@ fn a_configured_method_the_repository_forbids_is_blocked() {
     };
 
     assert_eq!(
-        decide(&snapshot, &queue, &at_the_front()).status,
+        decide(&snapshot, &queue, &at_the_front(alone())).status,
         Status::Blocked(WhyBlocked::MergeMethodNotAllowed {
             chosen: MergeMethod::Squash,
             allowed: vec![MergeMethod::Merge],
@@ -313,7 +359,7 @@ fn a_merge_method_nobody_can_satisfy_blocks_the_whole_queue_at_once() {
     let snapshot = a_pull_request().allowing(allowed.clone()).done();
     let behind = InQueue {
         ahead: 4,
-        ..at_the_front()
+        ..at_the_front(alone())
     };
 
     assert_eq!(
@@ -332,9 +378,8 @@ fn a_verification_that_ran_out_of_time_says_so_rather_than_naming_a_check() {
         &snapshot,
         &main_queue(),
         &InQueue {
-            ahead: 0,
-            paused: false,
             verification: Some(&waiting),
+            ..at_the_front(alone())
         },
     );
 
@@ -343,5 +388,600 @@ fn a_verification_that_ran_out_of_time_says_so_rather_than_naming_a_check() {
         "the checks did not finish in time",
         "the sentence used to be smuggled through the failed-check list, which read as \
          check \"the checks did not finish in time\" failed"
+    );
+}
+
+#[test]
+fn everyone_on_a_passing_candidate_is_told_to_merge() {
+    let together = carrying(&[(20, "head-one"), (21, "head-two"), (22, "head-three")]);
+    let passed = Verification {
+        aboard: together.clone(),
+        ..verified(Conclusion::Success)
+    };
+
+    for (place, one) in together.iter().enumerate() {
+        let snapshot = a_pull_request()
+            .numbered(one.number)
+            .at_head(one.head.as_str())
+            .whose_base_last_moved_at(oclock(11, 0))
+            .with_checks(vec![passing("test", one.head.as_str(), oclock(9, 30))])
+            .done();
+        let entry = InQueue {
+            ahead: place,
+            verification: Some(&passed),
+            ..at_the_front(&together)
+        };
+
+        let decision = decide(&snapshot, &main_queue(), &entry);
+
+        assert_eq!(decision.status, Status::Merging, "#{}", one.number);
+        assert_eq!(
+            decision.next,
+            Next::Merge {
+                method: MergeMethod::Squash
+            },
+            "#{} rode the candidate that passed, so it merges with the rest",
+            one.number
+        );
+    }
+}
+
+#[test]
+fn a_batch_that_fails_blames_nobody_and_is_tried_again_with_fewer() {
+    let together = carrying(&[(20, "head-one"), (21, "head-two")]);
+    let snapshot = a_pull_request()
+        .numbered(20)
+        .whose_base_last_moved_at(oclock(11, 0))
+        .with_checks(vec![passing("test", "head-one", oclock(9, 30))])
+        .done();
+    let failed = Verification {
+        aboard: together.clone(),
+        failed_checks: vec!["integration tests".to_owned()],
+        ..verified(Conclusion::Failure)
+    };
+    let entry = InQueue {
+        verification: Some(&failed),
+        ..at_the_front(&together)
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(
+        decision.next,
+        Next::DiscardVerification,
+        "two pull requests failed together, so neither of them is proven to be the one at fault"
+    );
+    assert!(
+        !decision.status.is_settled(),
+        "throwing somebody out of the queue on a shared failure punishes the innocent"
+    );
+}
+
+#[test]
+fn the_last_one_left_on_a_failing_candidate_is_the_one_at_fault() {
+    let snapshot = a_pull_request()
+        .whose_base_last_moved_at(oclock(11, 0))
+        .with_checks(vec![passing("test", "head-one", oclock(9, 30))])
+        .done();
+    let failed = Verification {
+        failed_checks: vec!["integration tests".to_owned()],
+        ..verified(Conclusion::Failure)
+    };
+    let entry = InQueue {
+        verification: Some(&failed),
+        ..at_the_front(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).status,
+        Status::Failed(WhyFailed::ChecksFailed {
+            checks: vec!["integration tests".to_owned()]
+        })
+    );
+}
+
+#[test]
+fn a_candidate_that_gained_or_lost_a_rider_is_no_evidence_about_the_ones_left() {
+    let verified_two = carrying(&[(20, "head-one"), (21, "head-two")]);
+    let snapshot = a_pull_request()
+        .numbered(20)
+        .whose_base_last_moved_at(oclock(11, 0))
+        .with_checks(vec![passing("test", "head-one", oclock(9, 30))])
+        .done();
+    let passed = Verification {
+        aboard: verified_two,
+        ..verified(Conclusion::Success)
+    };
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..at_the_front(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).next,
+        Next::DiscardVerification,
+        "the tree that passed contained #21's commits, so it says nothing about #20 on its own"
+    );
+}
+
+#[test]
+fn a_batch_never_takes_the_fast_path() {
+    let together = carrying(&[(20, "head-one"), (21, "head-two")]);
+    let snapshot = a_pull_request().numbered(20).done();
+
+    let decision = decide(&snapshot, &main_queue(), &at_the_front(&together));
+
+    assert_eq!(
+        decision.next,
+        Next::BuildCandidate {
+            onto: Sha::from("base-one"),
+            aboard: together,
+        },
+        "each pull request's own checks say nothing about the two of them merged together"
+    );
+}
+
+#[test]
+fn somebody_riding_with_others_is_told_who_they_are_riding_with() {
+    let together = carrying(&[(20, "head-one"), (21, "head-two"), (22, "head-three")]);
+    let snapshot = a_pull_request()
+        .numbered(21)
+        .at_head("head-two")
+        .with_checks(vec![passing("test", "head-two", oclock(9, 30))])
+        .done();
+    let running = Verification {
+        aboard: together.clone(),
+        ..verified(Conclusion::Pending)
+    };
+    let entry = InQueue {
+        verification: Some(&running),
+        ..at_the_front(&together)
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).status.to_string(),
+        "checking the candidate, which also carries #20 and #22",
+        "somebody whose own checks are green needs to know whose work they are waiting on"
+    );
+}
+
+#[test]
+fn a_queue_verifying_one_at_a_time_says_nothing_about_company() {
+    let snapshot = a_pull_request().done();
+    let running = verified(Conclusion::Pending);
+    let entry = InQueue {
+        verification: Some(&running),
+        ..at_the_front(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).status.to_string(),
+        "checking the candidate"
+    );
+}
+
+#[test]
+fn a_batch_grows_by_one_when_it_passes_and_halves_when_it_fails() {
+    let rules = Queue {
+        batch_size: 8,
+        ..main_queue()
+    };
+
+    assert_eq!(after_a_batch(1, 1, &rules, true), 2);
+    assert_eq!(after_a_batch(4, 4, &rules, true), 5);
+    assert_eq!(
+        after_a_batch(8, 8, &rules, true),
+        8,
+        "never past the ceiling"
+    );
+    assert_eq!(after_a_batch(8, 8, &rules, false), 4);
+    assert_eq!(after_a_batch(2, 2, &rules, false), 1);
+    assert_eq!(
+        after_a_batch(1, 1, &rules, false),
+        1,
+        "one that failed on its own has nowhere smaller to go"
+    );
+    assert_eq!(
+        after_a_batch(4, 1, &rules, true),
+        4,
+        "a batch of one because only one was ready proves nothing against four, so the queue \
+         keeps what it had rather than forgetting it"
+    );
+}
+
+#[test]
+fn a_queue_never_verifies_more_than_it_is_allowed_or_more_than_it_has() {
+    let rules = Queue {
+        batch_size: 3,
+        ..main_queue()
+    };
+
+    assert_eq!(how_many_to_verify(&rules, 5, 9), 3, "the ceiling holds");
+    assert_eq!(how_many_to_verify(&rules, 2, 9), 2);
+    assert_eq!(how_many_to_verify(&rules, 3, 1), 1, "only one is ready");
+    assert_eq!(
+        how_many_to_verify(&rules, 0, 9),
+        1,
+        "a queue that has never verified anything still verifies one"
+    );
+}
+
+#[test]
+fn turning_batching_off_leaves_one_at_a_time() {
+    let rules = Queue {
+        batch_size: 1,
+        ..main_queue()
+    };
+
+    assert_eq!(how_many_to_verify(&rules, 9, 9), 1);
+    assert_eq!(after_a_batch(1, 1, &rules, true), 1);
+}
+
+#[test]
+fn nothing_tells_us_when_github_finishes_working_out_whether_this_merges() {
+    assert!(
+        WhyWaiting::MergeabilityUnknown.github_will_not_tell_us_when_this_changes(),
+        "GitHub sends no event when it settles on an answer, so the queue has to come back and \
+         ask"
+    );
+
+    for waiting in [
+        WhyWaiting::Draft,
+        WhyWaiting::NeedsApproval { have: 1, want: 2 },
+        WhyWaiting::RequiredChecksPending { done: 2, total: 4 },
+        WhyWaiting::QueuePaused,
+    ] {
+        assert!(
+            !waiting.github_will_not_tell_us_when_this_changes(),
+            "a webhook arrives when this changes, so looking again on a timer is only noise: \
+             {waiting}"
+        );
+    }
+}
+
+static AHEAD: LazyLock<Vec<Aboard>> = LazyLock::new(|| carrying(&[(11, "head-of-another")]));
+static CANDIDATE_AHEAD: LazyLock<Sha> = LazyLock::new(|| Sha::from("candidate-ahead"));
+
+fn speculating(aboard: &[Aboard]) -> InQueue<'_> {
+    InQueue {
+        assuming: &AHEAD,
+        onto: &CANDIDATE_AHEAD,
+        ..at_the_front(aboard)
+    }
+}
+
+fn verified_on_top(conclusion: Conclusion, went: HowItWent) -> Verification {
+    Verification {
+        base: Sha::from("candidate-ahead"),
+        assumed: vec![Assumed {
+            number: 11,
+            head: Sha::from("head-of-another"),
+            went,
+        }],
+        ..verified(conclusion)
+    }
+}
+
+fn landed_as_the_tip() -> HowItWent {
+    HowItWent::Landed {
+        at: Sha::from("base-one"),
+        head: Sha::from("head-of-another"),
+    }
+}
+
+#[test]
+fn a_speculative_candidate_never_takes_the_fast_path() {
+    let snapshot = a_pull_request().done();
+
+    let decision = decide(&snapshot, &main_queue(), &speculating(alone()));
+
+    assert_eq!(
+        decision.next,
+        Next::BuildCandidate {
+            onto: Sha::from("candidate-ahead"),
+            aboard: ALONE.clone(),
+        },
+        "the pull request's own checks tested the branch tip, which is not the tree this would \
+         land on"
+    );
+}
+
+#[test]
+fn a_candidate_that_passed_waits_while_what_it_assumed_is_still_going() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(Conclusion::Success, HowItWent::StillGoing);
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(
+        decision.status,
+        Status::Waiting(WhyWaiting::ThoseAheadHaveNotLanded { numbers: vec![11] })
+    );
+    assert_eq!(
+        decision.next,
+        Next::Nothing,
+        "merging now would put a tree on the branch that nothing has tested"
+    );
+}
+
+#[test]
+fn a_candidate_merges_once_what_it_assumed_has_landed_as_the_tip() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(Conclusion::Success, landed_as_the_tip());
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(decision.status, Status::Merging);
+    assert_eq!(
+        decision.next,
+        Next::Merge {
+            method: MergeMethod::Squash
+        }
+    );
+}
+
+#[test]
+fn a_candidate_whose_assumption_landed_but_let_somebody_else_in_is_thrown_away() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(
+        Conclusion::Success,
+        HowItWent::Landed {
+            at: Sha::from("somebody-elses-merge"),
+            head: Sha::from("head-of-another"),
+        },
+    );
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).next,
+        Next::DiscardVerification,
+        "the tree that landed is not the tree this was verified on top of"
+    );
+}
+
+#[test]
+fn a_candidate_whose_assumption_landed_at_a_different_head_is_thrown_away() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(
+        Conclusion::Success,
+        HowItWent::Landed {
+            at: Sha::from("base-one"),
+            head: Sha::from("head-that-was-pushed-after"),
+        },
+    );
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).next,
+        Next::DiscardVerification
+    );
+}
+
+#[test]
+fn a_candidate_whose_assumption_left_the_queue_is_thrown_away() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(Conclusion::Success, HowItWent::GoneFromTheQueue);
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..speculating(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).next,
+        Next::DiscardVerification
+    );
+}
+
+#[test]
+fn a_speculative_candidate_that_fails_accuses_nobody() {
+    let snapshot = a_pull_request().done();
+    let failed = Verification {
+        failed_checks: vec!["integration tests".to_owned()],
+        ..verified_on_top(Conclusion::Failure, landed_as_the_tip())
+    };
+    let entry = InQueue {
+        verification: Some(&failed),
+        ..speculating(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(
+        decision.next,
+        Next::DiscardVerification,
+        "the failure may belong to the work this assumed, so it is built again without it"
+    );
+    assert!(
+        !decision.status.is_settled(),
+        "only a pull request verified on the branch's own tip, carrying nothing but itself, has \
+         been shown to be at fault"
+    );
+}
+
+#[test]
+fn a_candidate_that_now_assumes_somebody_different_is_thrown_away() {
+    let snapshot = a_pull_request().done();
+    let passed = verified_on_top(Conclusion::Success, landed_as_the_tip());
+    let now_assuming = carrying(&[(12, "head-of-a-third")]);
+    let entry = InQueue {
+        verification: Some(&passed),
+        assuming: &now_assuming,
+        ..speculating(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).next,
+        Next::DiscardVerification
+    );
+}
+
+#[test]
+fn a_queue_that_verifies_one_at_a_time_does_not_speculate() {
+    let rules = Queue {
+        speculate: 2,
+        ..main_queue()
+    };
+
+    assert_eq!(
+        how_deep_to_speculate(&rules, 2, 1),
+        1,
+        "a queue that halved its way down to one is a queue whose checks are flaky, and every \
+         speculative run there is thrown away"
+    );
+    assert_eq!(how_deep_to_speculate(&rules, 2, 2), 2);
+
+    let never_batches = Queue {
+        batch_size: 1,
+        speculate: 2,
+        ..main_queue()
+    };
+    assert_eq!(
+        how_deep_to_speculate(&never_batches, 2, 1),
+        2,
+        "a queue that was never going to verify more than one at a time is not a queue that \
+         halved its way down to one, and it is telling us nothing about flaky checks"
+    );
+}
+
+#[test]
+fn speculation_stays_off_until_somebody_turns_it_on() {
+    let rules = main_queue();
+
+    assert_eq!(rules.most_it_will_speculate(), 1);
+    assert_eq!(how_deep_to_speculate(&rules, 5, 5), 1);
+    assert_eq!(after_a_chain(1, &rules, false), 1);
+}
+
+#[test]
+fn a_chain_that_was_thrown_away_makes_the_queue_speculate_less() {
+    let rules = Queue {
+        speculate: 2,
+        ..main_queue()
+    };
+
+    assert_eq!(after_a_chain(2, &rules, true), 1);
+    assert_eq!(after_a_chain(1, &rules, true), 1, "it never goes below one");
+    assert_eq!(after_a_chain(1, &rules, false), 2);
+    assert_eq!(after_a_chain(2, &rules, false), 2, "the ceiling holds");
+}
+
+#[test]
+fn a_sentence_about_one_pull_request_does_not_read_as_if_there_were_several() {
+    let one = Status::Preparing {
+        alongside: Vec::new(),
+        assuming: vec![11],
+    };
+    let two = Status::Preparing {
+        alongside: Vec::new(),
+        assuming: vec![11, 12],
+    };
+
+    assert_eq!(
+        one.to_string(),
+        "building a candidate on top of #11, which has not landed yet"
+    );
+    assert_eq!(
+        two.to_string(),
+        "building a candidate on top of #11 and #12, which have not landed yet"
+    );
+    assert_eq!(
+        Status::Validating {
+            alongside: Vec::new(),
+            assuming: vec![11],
+        }
+        .to_string(),
+        "checking the candidate, which assumes #11 lands first"
+    );
+}
+
+#[test]
+fn a_pull_request_whose_candidate_passed_does_not_wait_for_github_to_work_out_whether_it_merges() {
+    let snapshot = a_pull_request().whose_mergeability_is_unknown().done();
+    let passed = verified(Conclusion::Success);
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..at_the_front(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(
+        decision.status,
+        Status::Merging,
+        "we merged this head into the candidate ourselves and its checks passed, so GitHub \
+         still thinking about whether it merges is not news"
+    );
+    assert_eq!(
+        decision.next,
+        Next::Merge {
+            method: MergeMethod::Squash
+        }
+    );
+}
+
+#[test]
+fn a_pull_request_with_nothing_to_show_for_itself_waits_for_github_to_make_its_mind_up() {
+    let snapshot = a_pull_request().whose_mergeability_is_unknown().done();
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &at_the_front(alone())).status,
+        Status::Waiting(WhyWaiting::MergeabilityUnknown),
+        "with no candidate behind it there is no evidence that it merges, so the queue waits"
+    );
+}
+
+#[test]
+fn a_stale_verification_does_not_let_an_unknown_mergeability_through() {
+    let snapshot = a_pull_request().whose_mergeability_is_unknown().done();
+    let stale = Verification {
+        base: Sha::from("base-zero"),
+        ..verified(Conclusion::Success)
+    };
+    let entry = InQueue {
+        verification: Some(&stale),
+        ..at_the_front(alone())
+    };
+
+    let decision = decide(&snapshot, &main_queue(), &entry);
+
+    assert_eq!(
+        decision.next,
+        Next::DiscardVerification,
+        "it proves nothing about the tree that is there now, so it is thrown away"
+    );
+    assert!(
+        !matches!(decision.next, Next::BuildCandidate { .. }),
+        "building a candidate for something GitHub has not said merges risks settling it on a \
+         conflict that may not be real"
+    );
+}
+
+#[test]
+fn a_conflict_is_never_talked_out_of_by_a_candidate_that_passed() {
+    let snapshot = a_pull_request().that_conflicts().done();
+    let passed = verified(Conclusion::Success);
+    let entry = InQueue {
+        verification: Some(&passed),
+        ..at_the_front(alone())
+    };
+
+    assert_eq!(
+        decide(&snapshot, &main_queue(), &entry).status,
+        Status::Blocked(WhyBlocked::Conflict),
+        "GitHub saying it does not merge is an answer, not the absence of one"
     );
 }

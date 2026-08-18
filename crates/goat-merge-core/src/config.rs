@@ -24,10 +24,12 @@ pub struct Queue {
     pub enqueue: Enqueue,
     #[serde(default)]
     pub merge_method: Option<MergeMethod>,
-    #[serde(default)]
-    pub mode: Mode,
     #[serde(default = "half_an_hour_and_a_quarter", deserialize_with = "duration")]
     pub check_timeout: Duration,
+    #[serde(default = "five")]
+    pub batch_size: usize,
+    #[serde(default = "one")]
+    pub speculate: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -36,13 +38,6 @@ pub enum Enqueue {
     #[default]
     Manual,
     Automatic,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum Mode {
-    #[default]
-    Serial,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -92,9 +87,18 @@ impl Queue {
             branch: branch.into(),
             enqueue: Enqueue::Manual,
             merge_method: None,
-            mode: Mode::Serial,
             check_timeout: half_an_hour_and_a_quarter(),
+            batch_size: five(),
+            speculate: one(),
         }
+    }
+
+    pub fn most_it_will_verify_at_once(&self) -> usize {
+        self.batch_size.max(1)
+    }
+
+    pub fn most_it_will_speculate(&self) -> usize {
+        self.speculate.clamp(1, 2)
     }
 }
 
@@ -120,6 +124,14 @@ pub enum ConfigError {
 
 fn half_an_hour_and_a_quarter() -> Duration {
     Duration::from_secs(45 * 60)
+}
+
+fn five() -> usize {
+    5
+}
+
+fn one() -> usize {
+    1
 }
 
 fn duration<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {

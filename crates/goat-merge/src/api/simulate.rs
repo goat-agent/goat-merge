@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use goat_merge_core::{Config, InQueue, Queue as QueueRules, assess, decide};
+use goat_merge_core::{Aboard, Config, InQueue, Queue as QueueRules, assess, decide};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -123,11 +123,18 @@ pub async fn simulate(
         .await?;
 
     let readiness = assess(&looked.snapshot);
+    let on_its_own = [Aboard {
+        number: looked.snapshot.number,
+        head: looked.snapshot.head.clone(),
+    }];
     let decision = decide(
         &looked.snapshot,
         &rules,
         &InQueue {
             ahead: 0,
+            aboard: &on_its_own,
+            assuming: &[],
+            onto: &looked.snapshot.base.sha,
             paused: queue.paused,
             verification: None,
         },

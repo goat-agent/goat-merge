@@ -27,25 +27,39 @@ const statuses = [
 ] as const satisfies readonly Status[];
 
 export type Trial = {
+  id: number;
   base: string;
-  head: string;
+  aboard: number[];
+  assuming: number[];
+  depth: number;
+  built_on: number | null;
+  narrowed_from: number | null;
+  discarded_because: string | null;
   candidate_branch: string;
   candidate_pull_request: number | null;
   candidate_sha: string | null;
   conclusion: string;
   failed_checks: string[];
   started_at: string;
+  finished_at: string | null;
 };
 
 export const readsAsATrial: Read<Trial> = shape((given) => ({
+  id: need(whole, given.id),
   base: need(text, given.base),
-  head: need(text, given.head),
+  aboard: need(list(whole), given.aboard),
+  assuming: need(list(whole), given.assuming),
+  depth: need(whole, given.depth),
+  built_on: need(maybe(whole), given.built_on),
+  narrowed_from: need(maybe(whole), given.narrowed_from),
+  discarded_because: need(maybe(text), given.discarded_because),
   candidate_branch: need(text, given.candidate_branch),
   candidate_pull_request: need(maybe(whole), given.candidate_pull_request),
   candidate_sha: need(maybe(text), given.candidate_sha),
   conclusion: need(text, given.conclusion),
   failed_checks: need(list(text), given.failed_checks),
   started_at: need(text, given.started_at),
+  finished_at: need(maybe(text), given.finished_at),
 }));
 
 export type Row = {
@@ -85,6 +99,10 @@ export type QueueView = {
   paused: boolean;
   paused_by: string | null;
   base_sha: string | null;
+  verify_at_once: number;
+  verify_at_once_because: string | null;
+  speculate_to: number;
+  speculate_to_because: string | null;
   entries: Row[];
 };
 
@@ -95,6 +113,10 @@ export const readsAsAQueue: Read<QueueView> = shape((given) => ({
   paused: need(yesNo, given.paused),
   paused_by: need(maybe(text), given.paused_by),
   base_sha: need(maybe(text), given.base_sha),
+  verify_at_once: need(whole, given.verify_at_once),
+  verify_at_once_because: need(maybe(text), given.verify_at_once_because),
+  speculate_to: need(whole, given.speculate_to),
+  speculate_to_because: need(maybe(text), given.speculate_to_because),
   entries: need(list(readsAsARow), given.entries),
 }));
 
@@ -235,15 +257,13 @@ export const readsAsACliToken: Read<CliToken> = shape((given) => ({
 }));
 
 export type Manifest = {
-  personal: string;
-  organization: string;
+  where: string;
   manifest: string;
   already_set_up: boolean;
 };
 
 export const readsAsAManifest: Read<Manifest> = shape((given) => ({
-  personal: need(text, given.personal),
-  organization: need(text, given.organization),
+  where: need(text, given.where),
   manifest: need(text, given.manifest),
   already_set_up: need(yesNo, given.already_set_up),
 }));

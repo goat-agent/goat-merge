@@ -14,15 +14,7 @@ const COLUMNS: &str = "id, kind, subject, attempts";
 
 impl Store {
     pub async fn ask_for(&self, kind: &str, subject: &str) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into jobs (kind, subject) values ($1, $2) \
-             on conflict (kind, subject) do update set run_after = least(jobs.run_after, now())",
-        )
-        .bind(kind)
-        .bind(subject)
-        .execute(self.pool())
-        .await?;
-        Ok(())
+        self.put_in_a_request(kind, subject, None).await
     }
 
     pub async fn ask_for_later(
@@ -31,10 +23,26 @@ impl Store {
         subject: &str,
         after: Duration,
     ) -> Result<(), StoreError> {
-        let when = OffsetDateTime::now_utc() + after;
+        self.put_in_a_request(kind, subject, Some(OffsetDateTime::now_utc() + after))
+            .await
+    }
+
+    async fn put_in_a_request(
+        &self,
+        kind: &str,
+        subject: &str,
+        when: Option<OffsetDateTime>,
+    ) -> Result<(), StoreError> {
         sqlx::query(
-            "insert into jobs (kind, subject, run_after) values ($1, $2, $3) \
-             on conflict (kind, subject) do update set run_after = least(jobs.run_after, $3)",
+            "insert into jobs (kind, subject, run_after) values ($1, $2, coalesce($3, now())) \
+             on conflict (kind, subject) do update set \
+                 run_after = case when jobs.locked_at is null \
+                                  then least(jobs.run_after, coalesce($3, now())) \
+                                  else jobs.run_after end, \
+                 asked_again_for = case when jobs.locked_at is null \
+                                        then jobs.asked_again_for \
+                                        else least(jobs.asked_again_for, coalesce($3, now())) \
+                                   end",
         )
         .bind(kind)
         .bind(subject)
@@ -62,10 +70,21 @@ impl Store {
     }
 
     pub async fn job_is_done(&self, id: i64) -> Result<(), StoreError> {
-        sqlx::query("delete from jobs where id = $1")
+        let cleared = sqlx::query("delete from jobs where id = $1 and asked_again_for is null")
             .bind(id)
             .execute(self.pool())
             .await?;
+        if cleared.rows_affected() > 0 {
+            return Ok(());
+        }
+        sqlx::query(
+            "update jobs set run_after = asked_again_for, asked_again_for = null, \
+                 locked_at = null, locked_by = null, attempts = 0, last_error = null \
+             where id = $1 and asked_again_for is not null",
+        )
+        .bind(id)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 
@@ -77,7 +96,8 @@ impl Store {
     ) -> Result<(), StoreError> {
         let when = OffsetDateTime::now_utc() + try_again_in;
         sqlx::query(
-            "update jobs set locked_at = null, locked_by = null, last_error = $2, run_after = $3 \
+            "update jobs set locked_at = null, locked_by = null, asked_again_for = null, \
+                 last_error = $2, run_after = $3 \
              where id = $1",
         )
         .bind(id)
@@ -91,7 +111,8 @@ impl Store {
     pub async fn release_jobs_held_since_before(&self, stale: Duration) -> Result<u64, StoreError> {
         let cutoff = OffsetDateTime::now_utc() - stale;
         let freed = sqlx::query(
-            "update jobs set locked_at = null, locked_by = null \
+            "update jobs set locked_at = null, locked_by = null, asked_again_for = null, \
+                 run_after = least(run_after, asked_again_for) \
              where locked_at is not null and locked_at < $1",
         )
         .bind(cutoff)

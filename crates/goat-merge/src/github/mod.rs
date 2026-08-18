@@ -66,8 +66,10 @@ impl Github {
         if let Some(token) = auth.borrowed(installation) {
             return Ok(token);
         }
+        let minting = format!("/app/installations/{installation}/access_tokens");
         let minted: calls::MintedToken = self
             .send(
+                &minting,
                 self.http
                     .request(
                         Method::POST,
@@ -139,6 +141,28 @@ impl Github {
         body: Option<Value>,
     ) -> Result<T, GithubError> {
         let token = self.token_for(who.0).await?;
+        self.send(path, self.asking(&token, method, path, body))
+            .await
+    }
+
+    pub(crate) async fn as_ourselves<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<T, GithubError> {
+        let token = self.auth()?.as_the_app()?;
+        self.send(path, self.asking(&token, method, path, body))
+            .await
+    }
+
+    fn asking(
+        &self,
+        token: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> RequestBuilder {
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.api))
@@ -148,10 +172,37 @@ impl Github {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        self.send(request).await
+        request
     }
 
-    async fn send<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T, GithubError> {
+    async fn send<T: DeserializeOwned>(
+        &self,
+        asking: &str,
+        request: RequestBuilder,
+    ) -> Result<T, GithubError> {
+        let mut wait_before_trying_again = ONE_MORE_TIME;
+        loop {
+            let Some(again) = request.try_clone() else {
+                return self.send_once(asking, request).await;
+            };
+            match self.send_once(asking, again).await {
+                Err(GithubError::Refused { status, .. })
+                    if status.is_server_error() && !wait_before_trying_again.is_empty() =>
+                {
+                    let (pause, rest) = wait_before_trying_again.split_at(1);
+                    wait_before_trying_again = rest;
+                    tokio::time::sleep(std::time::Duration::from_millis(pause[0])).await;
+                }
+                answer => return answer,
+            }
+        }
+    }
+
+    async fn send_once<T: DeserializeOwned>(
+        &self,
+        asking: &str,
+        request: RequestBuilder,
+    ) -> Result<T, GithubError> {
         let response = request
             .send()
             .await
@@ -167,6 +218,7 @@ impl Github {
         }
         if !status.is_success() {
             return Err(GithubError::Refused {
+                asking: asking.to_owned(),
                 said: what_github_said(&body),
                 body,
                 status,
@@ -253,9 +305,10 @@ pub enum GithubError {
     Unreachable { problem: String },
     #[error("GitHub is rate limiting this server")]
     RateLimited { wait: Option<u64> },
-    #[error("GitHub answered {status}: {body}")]
+    #[error("GitHub answered {status} to {asking}: {body}")]
     Refused {
         status: StatusCode,
+        asking: String,
         said: Option<String>,
         body: String,
     },
@@ -267,6 +320,8 @@ pub enum GithubError {
     NoAppYet,
 }
 
+const ONE_MORE_TIME: &[u64] = &[250, 1_000];
+
 impl GithubError {
     pub fn is_conflict(&self) -> bool {
         matches!(self, Self::Refused { status, .. } if *status == StatusCode::CONFLICT)
@@ -274,7 +329,9 @@ impl GithubError {
 
     pub fn says_it_is_already_there(&self) -> bool {
         match self {
-            Self::Refused { status, said, body } => {
+            Self::Refused {
+                status, said, body, ..
+            } => {
                 *status == StatusCode::CONFLICT
                     || (*status == StatusCode::UNPROCESSABLE_ENTITY && {
                         let words = said.as_deref().unwrap_or(body).to_lowercase();
@@ -307,6 +364,7 @@ mod tests {
     fn refusing(body: &str) -> GithubError {
         GithubError::Refused {
             status: StatusCode::UNPROCESSABLE_ENTITY,
+            asking: "/repos/acme/api/pulls".to_owned(),
             said: what_github_said(body),
             body: body.to_owned(),
         }
