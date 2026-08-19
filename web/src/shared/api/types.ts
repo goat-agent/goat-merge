@@ -277,10 +277,21 @@ export const readsAsAManifest: Read<Manifest> = shape((given) => ({
   already_set_up: need(yesNo, given.already_set_up),
 }));
 
-export type Enabled = { ok: boolean; branch: string; config_pull_request: number | null };
+export type Enabled = {
+  ok: boolean;
+  branch: string;
+  config_pull_request: number | null;
+  configuration: "not_asked" | "opened" | "already_says_that" | "yours_to_edit";
+  what_to_add: string | null;
+};
 
 export const readsAsEnabled: Read<Enabled> = shape((given) => ({
   ok: need(yesNo, given.ok),
   branch: need(text, given.branch),
   config_pull_request: need(maybe(whole), given.config_pull_request),
+  configuration: need(
+    oneOf(["not_asked", "opened", "already_says_that", "yours_to_edit"] as const),
+    given.configuration,
+  ),
+  what_to_add: need(maybe(text), given.what_to_add),
 }));

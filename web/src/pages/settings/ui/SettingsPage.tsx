@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { WhatWeHave, WhatWentWrong } from "@/entities/trouble";
-import type { Advice, Diagnosis } from "@/shared/api";
+import type { Advice, Diagnosis, Enabled } from "@/shared/api";
 import { api, Trouble } from "@/shared/api";
 import { cn, useAsked, useEvery, useLive } from "@/shared/lib";
 import { Badge, Button, Code, Empty, PageBody, Panel, Select } from "@/shared/ui";
@@ -46,9 +46,7 @@ export function SettingsPage() {
         batch_size: atOnce,
         write_config: withConfig,
       });
-      return done.config_pull_request
-        ? `The queue is on for ${done.branch}, and pull request #${done.config_pull_request} adds the configuration file.`
-        : `The queue is on for ${done.branch}.`;
+      return `The queue is on for ${done.branch}.${whatBecameOfTheFile(done)}`;
     });
 
   return (
@@ -210,6 +208,21 @@ const howForkPullRequestsStand: Record<Diagnosis["fork_workflow"], string> = {
     "a fork queue workflow is declared, but it asks for something a stranger's code must not have, so fork pull requests are still blocked",
   missing: "no fork queue workflow, so pull requests from forks will be blocked",
 };
+
+function whatBecameOfTheFile(done: Enabled): string {
+  if (done.configuration === "opened") {
+    return ` Pull request #${done.config_pull_request} adds the configuration file.`;
+  }
+  if (done.configuration === "already_says_that") {
+    return ` ${configFile} already says that, so there was nothing to write.`;
+  }
+  if (done.configuration === "yours_to_edit") {
+    return ` ${configFile} is already there and says something else, so it was left alone — nothing here rewrites a file somebody else wrote. Add this to its queue for ${done.branch}: ${(done.what_to_add ?? "").trim()}`;
+  }
+  return "";
+}
+
+const configFile = ".github/merge-queue.yml";
 
 const whateverIsAllowed = "whatever the repository allows";
 const batchSizes = [1, 2, 3, 5, 8, 10];
