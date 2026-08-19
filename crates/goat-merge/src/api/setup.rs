@@ -514,9 +514,9 @@ pub async fn enable(
         .await?;
     let queue = engine.store.queue_for(repository.id, &branch).await?;
 
-    let mut opened = None;
+    let mut wrote = WhatWeDidAboutTheFile::WereNotAsked;
     if how.write_config.unwrap_or(false) {
-        opened = self_serve_config(
+        wrote = self_serve_config(
             &engine,
             who,
             &full,
@@ -540,10 +540,46 @@ pub async fn enable(
     engine.tend_queue_soon(queue.id).await?;
     engine.announce(&full);
 
-    Ok(
-        Answer(json!({ "ok": true, "branch": branch, "config_pull_request": opened }))
-            .into_response(),
-    )
+    Ok(Answer(json!({
+        "ok": true,
+        "branch": branch,
+        "config_pull_request": wrote.pull_request(),
+        "configuration": wrote.what_happened(),
+        "what_to_add": wrote.what_to_add(),
+    }))
+    .into_response())
+}
+
+enum WhatWeDidAboutTheFile {
+    WereNotAsked,
+    OpenedAPullRequest { number: i32 },
+    ItAlreadySaysThat,
+    ItIsNotOursToRewrite { add: String },
+}
+
+impl WhatWeDidAboutTheFile {
+    fn pull_request(&self) -> Option<i32> {
+        match self {
+            Self::OpenedAPullRequest { number } => Some(*number),
+            _ => None,
+        }
+    }
+
+    fn what_happened(&self) -> &'static str {
+        match self {
+            Self::WereNotAsked => "not_asked",
+            Self::OpenedAPullRequest { .. } => "opened",
+            Self::ItAlreadySaysThat => "already_says_that",
+            Self::ItIsNotOursToRewrite { .. } => "yours_to_edit",
+        }
+    }
+
+    fn what_to_add(&self) -> Option<&str> {
+        match self {
+            Self::ItIsNotOursToRewrite { add } => Some(add),
+            _ => None,
+        }
+    }
 }
 
 async fn self_serve_config(
@@ -553,20 +589,22 @@ async fn self_serve_config(
     branch: &str,
     method: Option<MergeMethod>,
     batch_size: Option<usize>,
-) -> Result<Option<i32>, Fault> {
-    if already_says_so(engine, who, full, branch).await? {
-        return Ok(None);
+) -> Result<WhatWeDidAboutTheFile, Fault> {
+    let queue_we_would_write = a_queue_that_says(branch, method, batch_size);
+
+    if let Some(already) = engine.github.file(who, full, FILE, branch).await? {
+        return Ok(
+            match what_it_is_missing(&already, branch, method, batch_size) {
+                None => WhatWeDidAboutTheFile::ItAlreadySaysThat,
+                Some(add) => WhatWeDidAboutTheFile::ItIsNotOursToRewrite { add },
+            },
+        );
     }
+
     let tip = engine.github.branch_tip(who, full, branch).await?;
     let working = "merge-queue/setup";
     engine.github.make_branch(who, full, working, &tip).await?;
-    let mut written = format!("version: 1\n\nqueues:\n  - branch: {branch}\n");
-    if let Some(method) = method {
-        written.push_str(&format!("    merge_method: {method}\n"));
-    }
-    if let Some(most) = batch_size {
-        written.push_str(&format!("    batch_size: {most}\n"));
-    }
+    let written = format!("version: 1\n\nqueues:\n{queue_we_would_write}");
     engine
         .github
         .write_file(
@@ -593,20 +631,50 @@ async fn self_serve_config(
             ),
         )
         .await?;
-    Ok(Some(opened.number))
+    Ok(WhatWeDidAboutTheFile::OpenedAPullRequest {
+        number: opened.number,
+    })
 }
 
-async fn already_says_so(
-    engine: &Engine,
-    who: As,
-    full: &str,
+fn a_queue_that_says(
     branch: &str,
-) -> Result<bool, Fault> {
-    let Some(written) = engine.github.file(who, full, FILE, branch).await? else {
-        return Ok(false);
+    method: Option<MergeMethod>,
+    batch_size: Option<usize>,
+) -> String {
+    let mut written = format!("  - branch: {branch}\n");
+    if let Some(method) = method {
+        written.push_str(&format!("    merge_method: {method}\n"));
+    }
+    if let Some(most) = batch_size {
+        written.push_str(&format!("    batch_size: {most}\n"));
+    }
+    written
+}
+
+fn what_it_is_missing(
+    already: &str,
+    branch: &str,
+    method: Option<MergeMethod>,
+    batch_size: Option<usize>,
+) -> Option<String> {
+    let Ok(config) = goat_merge_core::Config::parse(already) else {
+        return Some(a_queue_that_says(branch, method, batch_size));
     };
-    Ok(goat_merge_core::Config::parse(&written)
-        .is_ok_and(|config| config.queue_for(branch).is_some()))
+    let Some(queue) = config.queue_for(branch) else {
+        return Some(a_queue_that_says(branch, method, batch_size));
+    };
+    let mut missing = String::new();
+    if let Some(method) = method
+        && queue.merge_method != Some(method)
+    {
+        missing.push_str(&format!("    merge_method: {method}\n"));
+    }
+    if let Some(most) = batch_size
+        && queue.batch_size != most
+    {
+        missing.push_str(&format!("    batch_size: {most}\n"));
+    }
+    (!missing.is_empty()).then_some(missing)
 }
 
 pub async fn disable(
@@ -818,5 +886,75 @@ mod tests {
             "{text}"
         );
         assert!(where_to_go.contains("settings/rules/new"));
+    }
+}
+
+#[cfg(test)]
+mod what_to_write {
+    use super::{MergeMethod, what_it_is_missing};
+
+    const A_QUEUE_WITH_NO_METHOD: &str =
+        "version: 1\nqueues:\n  - branch: main\n    batch_size: 5\n";
+
+    #[test]
+    fn a_file_that_already_says_it_is_left_alone() {
+        let says_it = "version: 1\nqueues:\n  - branch: main\n    merge_method: squash\n";
+
+        assert_eq!(
+            what_it_is_missing(says_it, "main", Some(MergeMethod::Squash), None),
+            None
+        );
+    }
+
+    #[test]
+    fn a_queue_with_no_merge_method_is_told_which_line_to_add() {
+        let missing = what_it_is_missing(
+            A_QUEUE_WITH_NO_METHOD,
+            "main",
+            Some(MergeMethod::Squash),
+            None,
+        )
+        .expect("the one thing stopping every pull request here is worth naming");
+
+        assert_eq!(missing.trim(), "merge_method: squash");
+    }
+
+    #[test]
+    fn a_file_that_only_knows_another_branch_keeps_what_it_knows() {
+        let elsewhere = "version: 1\nqueues:\n  - branch: develop\n    merge_method: squash\n";
+
+        let missing = what_it_is_missing(elsewhere, "main", Some(MergeMethod::Merge), None)
+            .expect("a file with no queue for this branch is missing the whole thing");
+
+        assert!(missing.contains("- branch: main"), "{missing}");
+        assert!(
+            missing.contains("merge_method: merge"),
+            "and the method that was picked: {missing}"
+        );
+    }
+
+    #[test]
+    fn a_file_nobody_can_parse_is_not_quietly_replaced() {
+        let broken = "version: 1\nqueues:\n  - branch: main\n    batchSize: 5\n";
+
+        assert!(
+            what_it_is_missing(broken, "main", Some(MergeMethod::Squash), None).is_some(),
+            "a file we cannot read is still somebody's file; say what it needs rather than \
+             write over it"
+        );
+    }
+
+    #[test]
+    fn a_batch_size_that_already_matches_is_not_asked_for_again() {
+        assert_eq!(
+            what_it_is_missing(A_QUEUE_WITH_NO_METHOD, "main", None, Some(5)),
+            None
+        );
+        assert_eq!(
+            what_it_is_missing(A_QUEUE_WITH_NO_METHOD, "main", None, Some(3))
+                .as_deref()
+                .map(str::trim),
+            Some("batch_size: 3")
+        );
     }
 }
