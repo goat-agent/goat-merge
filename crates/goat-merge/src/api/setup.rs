@@ -178,6 +178,7 @@ pub async fn diagnose(
         web: &engine.settings.github_web,
         full: &full,
         branch: &branch,
+        running: repository.active && repository.we_can_still_see_it(),
         protected: protection.declared_anywhere,
         enforced: false,
         others_required: protection.checks_somebody_else_runs().len(),
@@ -231,6 +232,7 @@ struct Diagnosed<'a> {
     web: &'a str,
     full: &'a str,
     branch: &'a str,
+    running: bool,
     protected: bool,
     enforced: bool,
     others_required: usize,
@@ -394,6 +396,22 @@ fn advice(found: &Diagnosed<'_>) -> Vec<Value> {
             ),
             Some(found.a_new_ruleset()),
             Some("Add a ruleset on GitHub"),
+        ));
+    }
+
+    if found.enforced && !found.running {
+        all.push(said(
+            "warning",
+            format!(
+                "{CHECK_NAME} is a required check on {}, but no queue is running here, so \
+                 nothing can merge on this branch at all — not through the queue and not by \
+                 hand. Turn the queue on, or take {CHECK_NAME} out of the ruleset. Pull requests \
+                 that were in the queue are still holding an unfinished check; turning it back \
+                 on picks them up where they were.",
+                found.branch
+            ),
+            Some(found.a_new_ruleset()),
+            Some("Open this branch's rules on GitHub"),
         ));
     }
 
@@ -626,6 +644,7 @@ mod tests {
             web: "https://github.com",
             full: "acme/api",
             branch: "main",
+            running: true,
             protected: true,
             enforced: true,
             others_required: 2,
@@ -662,6 +681,7 @@ mod tests {
     #[test]
     fn every_thing_worth_doing_says_where_to_go_and_do_it() {
         let nothing_done = Diagnosed {
+            running: false,
             protected: false,
             enforced: false,
             others_required: 0,
@@ -721,6 +741,34 @@ mod tests {
         };
 
         assert!(about(&elsewhere, "does not declare a queue for main").is_some());
+    }
+
+    #[test]
+    fn a_required_check_with_no_queue_behind_it_is_called_out_as_locking_the_branch() {
+        let switched_off = Diagnosed {
+            running: false,
+            ..everything_in_order()
+        };
+
+        let (text, where_to_go) = about(&switched_off, "no queue is running here")
+            .expect("turning the queue off leaves the branch unmergeable, and nobody says so");
+        assert!(text.contains("not by hand"), "{text}");
+        assert!(
+            text.contains("take Merge Queue out of the ruleset"),
+            "{text}"
+        );
+        assert!(where_to_go.contains("settings/rules"));
+
+        let never_enforced = Diagnosed {
+            running: false,
+            enforced: false,
+            ..everything_in_order()
+        };
+        assert!(
+            about(&never_enforced, "no queue is running here").is_none(),
+            "a branch nothing requires is not locked by anything, so there is nothing to warn \
+             about"
+        );
     }
 
     #[test]
