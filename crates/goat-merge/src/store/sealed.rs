@@ -51,7 +51,7 @@ pub fn key_from_hex(written: &str) -> Result<[u8; 32], SealError> {
         return Err(SealError::KeyIsNot32Bytes);
     }
     let mut key = [0_u8; 32];
-    for (byte, pair) in key.iter_mut().zip(trimmed.as_bytes().chunks_exact(2)) {
+    for (byte, pair) in key.iter_mut().zip(trimmed.as_bytes().as_chunks::<2>().0) {
         let pair = std::str::from_utf8(pair).map_err(|_| SealError::KeyIsNot32Bytes)?;
         *byte = u8::from_str_radix(pair, 16).map_err(|_| SealError::KeyIsNot32Bytes)?;
     }

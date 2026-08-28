@@ -9,7 +9,20 @@ permissions:
   packages: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$tagged" != "$declared" ]; then
+            echo "This tag is v$tagged, and Cargo.toml says $declared. A binary built here would tell everybody it is $declared, so nothing is released until the two agree. Set the workspace version to $tagged and tag that commit, or delete this tag and make one that matches."
+            exit 1
+          fi
+
   binaries:
+    needs: version
     strategy:
       matrix:
         include:
@@ -42,6 +55,7 @@ jobs:
           files: goat-merge-${{ matrix.target }}.tar.gz
 
   image:
+    needs: version
     strategy:
       matrix:
         include:
